@@ -54,6 +54,11 @@ void DisplayLink::platformInitialize()
     // FIXME: We can get here with displayID == 0 (webkit.org/b/212120), in which case CVDisplayLinkCreateWithCGDisplay()
     // probably defaults to the main screen.
     ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
+    if ((m_platformBackend = createCoreAnimationDisplayLinkBackendIfEnabled(*this, m_displayID))) {
+        m_displayNominalFramesPerSecond = m_platformBackend->nominalFramesPerSecond();
+        return;
+    }
+
     m_displayLink = createDisplayLinkWithDisplay(m_displayID);
     if (!m_displayLink)
         return;
@@ -72,6 +77,14 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 void DisplayLink::platformFinalize()
 {
     ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
+    if (RefPtr platformBackend = m_platformBackend) {
+        // invalidate() waits for any in-flight notification, which may read m_platformBackend in platformStop(),
+        // so only clear the member afterwards.
+        platformBackend->invalidate();
+        m_platformBackend = nullptr;
+        return;
+    }
+
     ASSERT(m_displayLink);
     if (!m_displayLink)
         return;
@@ -96,6 +109,9 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 bool DisplayLink::platformIsRunning() const
 {
+    if (m_platformBackend)
+        return m_platformBackend->isRunning();
+
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     return CVDisplayLinkIsRunning(m_displayLink.get());
 ALLOW_DEPRECATED_DECLARATIONS_END
@@ -103,6 +119,11 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 void DisplayLink::platformStart()
 {
+    if (RefPtr platformBackend = m_platformBackend) {
+        platformBackend->start();
+        return;
+    }
+
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     CVReturn error = CVDisplayLinkStart(m_displayLink.get());
 ALLOW_DEPRECATED_DECLARATIONS_END
@@ -112,6 +133,11 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 void DisplayLink::platformStop()
 {
+    if (RefPtr platformBackend = m_platformBackend) {
+        platformBackend->stop();
+        return;
+    }
+
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     CVDisplayLinkStop(m_displayLink.get());
 ALLOW_DEPRECATED_DECLARATIONS_END
