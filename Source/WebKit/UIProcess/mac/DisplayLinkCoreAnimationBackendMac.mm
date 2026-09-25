@@ -420,6 +420,11 @@ static DisplayLinkThreadPolicy threadPolicyFromDefaults(NSUserDefaults *defaults
     return DisplayLinkThreadPolicy::QoS;
 }
 
+bool displayLinkStatisticsLoggingEnabled()
+{
+    return [NSUserDefaults.standardUserDefaults boolForKey:@"WebKitDebugDisplayLinkLogStatistics"];
+}
+
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink& client, PlatformDisplayID displayID)
 {
     ASSERT(RunLoop::isMain());
@@ -437,7 +442,7 @@ RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnable
     DisplayLinkCoreAnimationBackendOptions options;
     options.callbackDelayFraction = std::clamp([defaults doubleForKey:@"WebKitDebugDisplayLinkCallbackDelayFraction"], 0.0, maximumCallbackDelayFraction);
     options.threadPolicy = threadPolicyFromDefaults(defaults);
-    options.logStatistics = [defaults boolForKey:@"WebKitDebugDisplayLinkLogStatistics"];
+    options.logStatistics = displayLinkStatisticsLoggingEnabled();
 
     return DisplayLinkCoreAnimationBackend::create(client, displayID, screen, options);
 }

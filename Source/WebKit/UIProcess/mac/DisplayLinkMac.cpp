@@ -29,12 +29,16 @@
 #if HAVE(DISPLAY_LINK)
 
 #include "Logging.h"
+#include <mach/mach_time.h>
 #include <wtf/ProcessPrivilege.h>
+#include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/TextStream.h>
 
 namespace WebKit {
 
 using namespace WebCore;
+
+WTF_MAKE_STRUCT_TZONE_ALLOCATED_IMPL(DisplayLink::CoreVideoStatistics);
 
 static RefPtr<__CVDisplayLink> createDisplayLinkWithDisplay(CGDirectDisplayID displayID)
 {
@@ -72,6 +76,9 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     }
 
     m_displayNominalFramesPerSecond = nominalFramesPerSecondFromDisplayLink(m_displayLink.get());
+
+    if (displayLinkStatisticsLoggingEnabled())
+        m_coreVideoStatistics = makeUnique<CoreVideoStatistics>();
 }
 
 void DisplayLink::platformFinalize()
@@ -143,10 +150,60 @@ ALLOW_DEPRECATED_DECLARATIONS_BEGIN
 ALLOW_DEPRECATED_DECLARATIONS_END
 }
 
-CVReturn DisplayLink::displayLinkCallback(CVDisplayLinkRef displayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data)
+CVReturn DisplayLink::displayLinkCallback(CVDisplayLinkRef displayLinkRef, const CVTimeStamp*, const CVTimeStamp* outputTime, CVOptionFlags, CVOptionFlags*, void* data)
 {
-    static_cast<DisplayLink*>(data)->notifyObserversDisplayDidRefresh();
+    auto* displayLink = static_cast<DisplayLink*>(data);
+    if (displayLink->m_coreVideoStatistics && outputTime) [[unlikely]]
+        displayLink->recordCoreVideoStatistics(*outputTime);
+    displayLink->notifyObserversDisplayDidRefresh();
     return kCVReturnSuccess;
+}
+
+void DisplayLink::recordCoreVideoStatistics(const CVTimeStamp& outputTime)
+{
+    if (!(outputTime.flags & kCVTimeStampHostTimeValid) || !outputTime.videoTimeScale || !outputTime.videoRefreshPeriod)
+        return;
+
+    static const mach_timebase_info_data_t timebase = [] {
+        mach_timebase_info_data_t info;
+        mach_timebase_info(&info);
+        return info;
+    }();
+    auto hostTimeToSeconds = [](uint64_t hostTime) {
+        return static_cast<double>(hostTime) * timebase.numer / timebase.denom / 1e9;
+    };
+
+    // outputTime is on the vsync grid, so the callback phase is the distance from the grid.
+    double now = hostTimeToSeconds(mach_absolute_time());
+    double period = static_cast<double>(outputTime.videoRefreshPeriod) / outputTime.videoTimeScale;
+    double phase = fmod(now - hostTimeToSeconds(outputTime.hostTime), period);
+    if (phase < 0)
+        phase += period;
+
+    auto& statistics = *m_coreVideoStatistics;
+    // Restart the window after a pause so that paused time does not count.
+    if (!statistics.windowStart || now - statistics.lastTick > 1) {
+        statistics.windowStart = now;
+        statistics.ticks = 0;
+        statistics.phases.shrink(0);
+    }
+    statistics.lastTick = now;
+    statistics.lastPeriod = period;
+    ++statistics.ticks;
+    statistics.phases.append(phase * 1000);
+
+    double elapsed = now - statistics.windowStart;
+    if (elapsed < 5)
+        return;
+
+    std::sort(statistics.phases.begin(), statistics.phases.end());
+    auto percentile = [&](double fraction) {
+        return statistics.phases[std::min<size_t>(statistics.phases.size() - 1, static_cast<size_t>(fraction * statistics.phases.size()))];
+    };
+    RELEASE_LOG(DisplayLink, "[UI ] CVDisplayLink stats display %u: %.1f ticks/s; callback-vsync ms p50 %.3f p95 %.3f (p50 %.1f%% of the %.3f ms refresh interval)",
+        m_displayID, statistics.ticks / elapsed, percentile(0.5), percentile(0.95), percentile(0.5) / (period * 10), period * 1000);
+
+    statistics.windowStart = 0;
 }
 
 } // namespace WebKit

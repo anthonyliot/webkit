@@ -69,6 +69,8 @@ public:
 
 // Returns null unless the WebKitDebugDisplayLinkBackend default is "CoreAnimation".
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink&, WebCore::PlatformDisplayID);
+// The WebKitDebugDisplayLinkLogStatistics default.
+bool displayLinkStatisticsLoggingEnabled();
 #endif
 
 class DisplayLink {
@@ -117,6 +119,17 @@ private:
 #if PLATFORM(MAC)
     static CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data);
     static WebCore::FramesPerSecond nominalFramesPerSecondFromDisplayLink(CVDisplayLinkRef);
+
+    // Only used with the WebKitDebugDisplayLinkLogStatistics default; accessed on the CVDisplayLink thread.
+    struct CoreVideoStatistics {
+        WTF_MAKE_STRUCT_TZONE_ALLOCATED(CoreVideoStatistics);
+        double windowStart { 0 };
+        double lastTick { 0 };
+        unsigned ticks { 0 };
+        double lastPeriod { 0 };
+        Vector<double> phases;
+    };
+    void recordCoreVideoStatistics(const CVTimeStamp& outputTime);
 #endif
     void notifyObserversDisplayDidRefresh();
 
@@ -141,6 +154,7 @@ private:
 #if PLATFORM(MAC)
     RefPtr<__CVDisplayLink> m_displayLink;
     RefPtr<DisplayLinkPlatformBackend> m_platformBackend;
+    std::unique_ptr<CoreVideoStatistics> m_coreVideoStatistics;
 #endif
 #if PLATFORM(GTK) || PLATFORM(WPE)
     std::unique_ptr<DisplayVBlankMonitor> m_vblankMonitor;
