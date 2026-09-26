@@ -292,6 +292,8 @@ void WebContextMenuProxyMac::setupServicesMenu()
         isPDFAttachment = attachment->utiType() == String(UTTypePDF.identifier);
     NSArray *items = nil;
     RetainPtr<NSItemProvider> itemProvider;
+    // FIXME: Adopt -[NSItemProvider initWithObject:]; -initWithItem:typeIdentifier: is deprecated in macOS 27.
+ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     if (hasControlledImage) {
         if (attachment)
             itemProvider = adoptNS([[NSItemProvider alloc] initWithItem:attachment->associatedElementNSData().get() typeIdentifier:attachment->utiType().createNSString().get()]);
@@ -315,6 +317,7 @@ void WebContextMenuProxyMac::setupServicesMenu()
         LOG_ERROR("No service controlled item represented in the context");
         return;
     }
+ALLOW_DEPRECATED_DECLARATIONS_END
 
     RetainPtr<NSSharingServicePicker> picker = adoptNS([[NSSharingServicePicker alloc] initWithItems:items]);
     [picker setStyle:hasControlledImage || isPDFAttachment ? NSSharingServicePickerStyleRollover : NSSharingServicePickerStyleTextSelection];
