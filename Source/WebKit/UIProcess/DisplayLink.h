@@ -37,7 +37,6 @@
 #include <wtf/TZoneMalloc.h>
 
 #if PLATFORM(MAC)
-#include <WebCore/CoreVideoExtras.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #endif
 
@@ -54,7 +53,7 @@ namespace WebKit {
 #if PLATFORM(MAC)
 class DisplayLink;
 
-// Alternate platform display link (CADisplayLink). When DisplayLink has no backend, it uses CVDisplayLink.
+// The platform display link driving a DisplayLink: CVDisplayLink (the default) or CADisplayLink.
 class DisplayLinkPlatformBackend : public ThreadSafeRefCounted<DisplayLinkPlatformBackend> {
 public:
     virtual ~DisplayLinkPlatformBackend() = default;
@@ -116,21 +115,6 @@ public:
 #endif
 
 private:
-#if PLATFORM(MAC)
-    static CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data);
-    static WebCore::FramesPerSecond nominalFramesPerSecondFromDisplayLink(CVDisplayLinkRef);
-
-    // Only used with the WebKitDebugDisplayLinkLogStatistics default; accessed on the CVDisplayLink thread.
-    struct CoreVideoStatistics {
-        WTF_MAKE_STRUCT_TZONE_ALLOCATED(CoreVideoStatistics);
-        double windowStart { 0 };
-        double lastTick { 0 };
-        unsigned ticks { 0 };
-        double lastPeriod { 0 };
-        Vector<double> phases;
-    };
-    void recordCoreVideoStatistics(const CVTimeStamp& outputTime);
-#endif
     void notifyObserversDisplayDidRefresh();
 
     void platformInitialize();
@@ -152,9 +136,7 @@ private:
     };
 
 #if PLATFORM(MAC)
-    RefPtr<__CVDisplayLink> m_displayLink;
     RefPtr<DisplayLinkPlatformBackend> m_platformBackend;
-    std::unique_ptr<CoreVideoStatistics> m_coreVideoStatistics;
 #endif
 #if PLATFORM(GTK) || PLATFORM(WPE)
     std::unique_ptr<DisplayVBlankMonitor> m_vblankMonitor;

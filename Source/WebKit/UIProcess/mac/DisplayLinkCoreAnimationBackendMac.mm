@@ -330,7 +330,8 @@ void DisplayLinkCoreAnimationBackend::armDelayTimer(CFTimeInterval fireMediaTime
         CFRunLoopTimerContext context { 0, this, nullptr, nullptr, nullptr };
         // Long-lived timer, re-armed with CFRunLoopTimerSetNextFireDate() on every tick.
         m_delayTimer = adoptCF(CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 1e9, 1e9, 0, 0, delayTimerFired, &context));
-        CFRunLoopAddTimer(CFRunLoopGetCurrent(), m_delayTimer.get(), kCFRunLoopCommonModes);
+        RetainPtr runLoop = CFRunLoopGetCurrent();
+        CFRunLoopAddTimer(runLoop.get(), m_delayTimer.get(), kCFRunLoopCommonModes);
     }
     CFTimeInterval delay = std::max<CFTimeInterval>(0, fireMediaTime - CACurrentMediaTime());
     // On non-realtime threads the kernel fires normal-urgency timers late by about min(delay / 8, 1ms); compensate.
