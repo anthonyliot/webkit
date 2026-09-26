@@ -34,6 +34,8 @@
 #include <wtf/CheckedPtr.h>
 #include <wtf/HashMap.h>
 #include <wtf/Lock.h>
+#include <wtf/MonotonicTime.h>
+#include <wtf/Seconds.h>
 #include <wtf/TZoneMalloc.h>
 
 #if PLATFORM(MAC)
@@ -50,6 +52,19 @@ struct wpe_playstation_display;
 
 namespace WebKit {
 
+// Timing of a display link tick, provided by platform display links that know it.
+struct DisplayLinkFrameTiming {
+    WebCore::FramesPerSecond linkFramesPerSecond { 0 }; // The rate the platform display link currently fires at.
+    Seconds linkInterval; // The time between two ticks of the platform display link.
+    MonotonicTime vsyncTime; // The vsync this tick corresponds to.
+    Seconds refreshInterval; // The display's refresh interval.
+    uint64_t vsyncIndex { 0 }; // The vsync count of this tick (vsyncTime / refreshInterval).
+    unsigned linkDivisor { 0 }; // The number of vsyncs between two ticks of the platform display link.
+    // The vsync index, modulo the divisor, on which the platform display link fires when it runs below the
+    // refresh rate, if known. Cadences kept on this phase stay steady when the link changes rate.
+    std::optional<unsigned> vsyncPhase;
+};
+
 #if PLATFORM(MAC)
 class DisplayLink;
 
@@ -62,6 +77,9 @@ public:
     virtual bool isRunning() const = 0;
     virtual void start() = 0;
     virtual void stop() = 0;
+    // The rate the observers need, a divisor of the nominal rate; 0 means the display's native rate.
+    // Backends that can't change their rate ignore this.
+    virtual void setPreferredFramesPerSecond(double) { }
     // Called on the main thread before the DisplayLink is destroyed; no callback reaches the DisplayLink afterwards.
     virtual void invalidate() = 0;
 };
@@ -111,11 +129,14 @@ public:
 
 #if PLATFORM(MAC)
     // Called by DisplayLinkPlatformBackend on its display link thread.
-    void platformBackendDidFire() { notifyObserversDisplayDidRefresh(); }
+    void platformBackendDidFire(std::optional<DisplayLinkFrameTiming> timing = std::nullopt) { notifyObserversDisplayDidRefresh(timing); }
 #endif
 
 private:
-    void notifyObserversDisplayDidRefresh();
+    void notifyObserversDisplayDidRefresh(std::optional<DisplayLinkFrameTiming> = std::nullopt);
+#if PLATFORM(MAC)
+    void updatePlatformPreferredFramesPerSecond() WTF_REQUIRES_LOCK(m_clientsLock);
+#endif
 
     void platformInitialize();
     void platformFinalize();
@@ -133,10 +154,18 @@ private:
     struct ClientInfo {
         unsigned fullSpeedUpdatesClientCount { 0 };
         Vector<ObserverInfo, 1> observers;
+        // When the platform display link provides frame timing: the time the next update is due, the interval
+        // it was computed with, and this client's own update count (so that clients which decimate the
+        // DisplayUpdate again, like the WebProcess DisplayRefreshMonitor, agree with the time-based decision).
+        std::optional<MonotonicTime> nextUpdateTime;
+        Seconds updateInterval;
+        unsigned updateIndex { 0 };
     };
 
 #if PLATFORM(MAC)
     RefPtr<DisplayLinkPlatformBackend> m_platformBackend;
+    // The divisor of the nominal rate last requested from the backend; 0 until the first request.
+    unsigned m_platformFrameRateDivisor WTF_GUARDED_BY_LOCK(m_clientsLock) { 0 };
 #endif
 #if PLATFORM(GTK) || PLATFORM(WPE)
     std::unique_ptr<DisplayVBlankMonitor> m_vblankMonitor;

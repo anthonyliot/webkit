@@ -47,6 +47,7 @@
 // (CoreVideo, the default, or CoreAnimation). Knobs, all read at creation time:
 //   WebKitDebugDisplayLinkCallbackDelayFraction (double, fraction of the display refresh interval, default 0)
 //   WebKitDebugDisplayLinkThreadPolicy (qos | fixed | timeConstraint, default qos)
+//   WebKitDebugDisplayLinkFrameRateControl (bool, default YES: set preferredFrameRateRange from the observers' needs)
 //   WebKitDebugDisplayLinkLogStatistics (bool, default NO)
 
 namespace WebKit {
@@ -67,6 +68,7 @@ enum class DisplayLinkThreadPolicy : uint8_t { QoS, Fixed, TimeConstraint };
 struct DisplayLinkCoreAnimationBackendOptions {
     double callbackDelayFraction { 0 };
     DisplayLinkThreadPolicy threadPolicy { DisplayLinkThreadPolicy::QoS };
+    bool frameRateControl { true };
     bool logStatistics { false };
 };
 
@@ -105,6 +107,20 @@ public:
         scheduleSynchronizePausedState();
     }
 
+    void setPreferredFramesPerSecond(double framesPerSecond) final
+    {
+        if (!m_options.frameRateControl)
+            return;
+        m_requestedFramesPerSecond = framesPerSecond;
+        if (m_runLoop->isCurrent()) {
+            applyPreferredFrameRate();
+            return;
+        }
+        m_runLoop->dispatch([protectedThis = Ref { *this }] {
+            protectedThis->applyPreferredFrameRate();
+        });
+    }
+
     void invalidate() final
     {
         ASSERT(RunLoop::isMain());
@@ -137,6 +153,7 @@ private:
     void synchronizePausedState();
     void invalidateOnLinkThread();
     void notifyClient();
+    void applyPreferredFrameRate();
     void armDelayTimer(CFTimeInterval fireMediaTime);
     void disarmDelayTimer();
     void recordStatistics(CADisplayLink *);
@@ -156,11 +173,14 @@ private:
     const DisplayLinkCoreAnimationBackendOptions m_options;
     const Ref<RunLoop> m_runLoop;
     std::atomic<bool> m_wantsRunning { false };
+    std::atomic<double> m_requestedFramesPerSecond { 0 };
 
     // Only accessed on the link thread.
     RetainPtr<CADisplayLink> m_displayLink;
     RetainPtr<CFRunLoopTimerRef> m_delayTimer;
     bool m_delayedNotificationPending { false };
+    double m_appliedFramesPerSecond { 0 };
+    DisplayLinkFrameTiming m_frameTiming;
     struct Statistics {
         CFTimeInterval windowStart { 0 };
         CFTimeInterval lastTimestamp { 0 };
@@ -183,14 +203,15 @@ void DisplayLinkCoreAnimationBackend::initialize(NSScreen *screen)
     RetainPtr target = adoptNS([[WKDisplayLinkBackendTarget alloc] initWithBackend:*this]);
     RetainPtr<CADisplayLink> displayLink = [screen displayLinkWithTarget:target.get() selector:@selector(displayLinkFired:)];
 
-    RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink backend created for display %u (screen %u), nominal fps %u, delay fraction %.3f, thread policy %u, link %p",
-        m_displayID, WebCore::displayID(screen), m_nominalFramesPerSecond, m_options.callbackDelayFraction, static_cast<unsigned>(m_options.threadPolicy), displayLink.get());
+    RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink backend created for display %u (screen %u), nominal fps %u, delay fraction %.3f, thread policy %u, frame rate control %d, link %p",
+        m_displayID, WebCore::displayID(screen), m_nominalFramesPerSecond, m_options.callbackDelayFraction, static_cast<unsigned>(m_options.threadPolicy), m_options.frameRateControl, displayLink.get());
 
     m_runLoop->dispatch([protectedThis = Ref { *this }, displayLink = WTF::move(displayLink)] mutable {
         protectedThis->configureThread();
         protectedThis->m_displayLink = WTF::move(displayLink);
         [protectedThis->m_displayLink setPaused:YES];
         [protectedThis->m_displayLink addToRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
+        protectedThis->applyPreferredFrameRate();
         protectedThis->synchronizePausedState();
     });
 }
@@ -295,6 +316,30 @@ void DisplayLinkCoreAnimationBackend::displayLinkFired(CADisplayLink *displayLin
             return;
     }
 
+    // The rate the link actually fires at, since the system may not grant exactly the requested range.
+    auto previousTiming = m_frameTiming;
+    // Derived from the tick spacing, not from the nominal rate, which is captured at creation and can go stale.
+    auto linkInterval = displayLink.targetTimestamp - displayLink.timestamp;
+    if (linkInterval > 0) {
+        m_frameTiming.linkInterval = Seconds { linkInterval };
+        m_frameTiming.linkFramesPerSecond = std::max<FramesPerSecond>(1, std::lround(1 / linkInterval));
+    }
+    if (auto duration = displayLink.duration; duration > 0) {
+        m_frameTiming.refreshInterval = Seconds { duration };
+        m_frameTiming.vsyncIndex = std::llround(displayLink.timestamp / duration);
+        m_frameTiming.linkDivisor = std::max(1U, static_cast<unsigned>(std::lround(linkInterval / duration)));
+        // Below the refresh rate, Core Animation fires on a fixed vsync phase (the same one for every divisor);
+        // learn it from the ticks so that cadences can stay on it while the link runs faster.
+        if (m_frameTiming.linkDivisor >= 2)
+            m_frameTiming.vsyncPhase = static_cast<unsigned>(m_frameTiming.vsyncIndex % m_frameTiming.linkDivisor);
+    }
+    m_frameTiming.vsyncTime = MonotonicTime::fromRawSeconds(displayLink.timestamp);
+    if (m_options.logStatistics && previousTiming.linkFramesPerSecond && previousTiming.linkFramesPerSecond != m_frameTiming.linkFramesPerSecond) {
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink display %u rate changed %u -> %u fps; %.3f ms since the previous tick, target in %.3f ms",
+            m_displayID, previousTiming.linkFramesPerSecond, m_frameTiming.linkFramesPerSecond, (m_frameTiming.vsyncTime - previousTiming.vsyncTime).milliseconds(),
+            (displayLink.targetTimestamp - displayLink.timestamp) * 1000);
+    }
+
     if (m_options.logStatistics)
         recordStatistics(displayLink);
 
@@ -320,7 +365,29 @@ void DisplayLinkCoreAnimationBackend::notifyClient()
 
     Locker locker { m_clientLock };
     if (auto* client = m_client)
-        client->platformBackendDidFire();
+        client->platformBackendDidFire(m_frameTiming.linkFramesPerSecond ? std::optional { m_frameTiming } : std::nullopt);
+}
+
+void DisplayLinkCoreAnimationBackend::applyPreferredFrameRate()
+{
+    ASSERT(m_runLoop->isCurrent());
+    if (!m_displayLink)
+        return;
+
+    double framesPerSecond = m_requestedFramesPerSecond;
+    if (framesPerSecond == m_appliedFramesPerSecond)
+        return;
+    m_appliedFramesPerSecond = framesPerSecond;
+
+    // Core Animation snaps the preferred rate to a divisor of the refresh rate; a small margin above the
+    // requested divisor rate keeps it from rounding to the next slower divisor.
+    auto range = framesPerSecond > 0 && framesPerSecond < m_nominalFramesPerSecond
+        ? CAFrameRateRangeMake(framesPerSecond, framesPerSecond + 0.01, framesPerSecond + 0.01)
+        : CAFrameRateRangeDefault;
+    [m_displayLink setPreferredFrameRateRange:range];
+
+    if (m_options.logStatistics)
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink display %u preferred frame rate %.2f", m_displayID, framesPerSecond);
 }
 
 void DisplayLinkCoreAnimationBackend::armDelayTimer(CFTimeInterval fireMediaTime)
@@ -379,12 +446,12 @@ void DisplayLinkCoreAnimationBackend::flushStatistics(CFTimeInterval now)
             return values[std::min<size_t>(values.size() - 1, static_cast<size_t>(fraction * values.size()))];
         };
 
-        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink stats display %u: %.1f ticks/s %.1f notifications/s (%u late); callback-vsync ms p50 %.3f p95 %.3f max %.3f; notify-vsync ms p50 %.3f p95 %.3f max %.3f; tick interval ms p50 %.3f p95 %.3f; duration %.3f period %.3f",
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink stats display %u: %.1f ticks/s %.1f notifications/s (%u late); callback-vsync ms p50 %.3f p95 %.3f max %.3f; notify-vsync ms p50 %.3f p95 %.3f max %.3f; tick interval ms p50 %.3f p95 %.3f; duration %.3f period %.3f; preferred %.2f fps",
             m_displayID, statistics.ticks / elapsed, statistics.notifications / elapsed, statistics.lateNotifications,
             percentile(statistics.callbackLatencies, 0.5), percentile(statistics.callbackLatencies, 0.95), percentile(statistics.callbackLatencies, 1),
             percentile(statistics.notificationLatencies, 0.5), percentile(statistics.notificationLatencies, 0.95), percentile(statistics.notificationLatencies, 1),
             percentile(statistics.tickIntervals, 0.5), percentile(statistics.tickIntervals, 0.95),
-            statistics.lastDuration, statistics.lastPeriod);
+            statistics.lastDuration, statistics.lastPeriod, m_appliedFramesPerSecond);
     }
 
     statistics.windowStart = 0;
@@ -444,6 +511,8 @@ RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnable
     options.callbackDelayFraction = std::clamp([defaults doubleForKey:@"WebKitDebugDisplayLinkCallbackDelayFraction"], 0.0, maximumCallbackDelayFraction);
     options.threadPolicy = threadPolicyFromDefaults(defaults);
     options.logStatistics = displayLinkStatisticsLoggingEnabled();
+    if ([defaults objectForKey:@"WebKitDebugDisplayLinkFrameRateControl"])
+        options.frameRateControl = [defaults boolForKey:@"WebKitDebugDisplayLinkFrameRateControl"];
 
     return DisplayLinkCoreAnimationBackend::create(client, displayID, screen, options);
 }

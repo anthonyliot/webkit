@@ -30,6 +30,7 @@
 
 #include "Logging.h"
 #include <WebCore/AnimationFrameRate.h>
+#include <numeric>
 #include <wtf/RunLoop.h>
 #include <wtf/SystemTracing.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -70,6 +71,9 @@ void DisplayLink::addObserver(Client& client, DisplayLinkObserverID observerID, 
         m_clients.ensure(client, [] {
             return ClientInfo { };
         }).iterator->value.observers.append({ observerID, preferredFramesPerSecond });
+#if PLATFORM(MAC)
+        updatePlatformPreferredFramesPerSecond();
+#endif
     }
 
     if (!platformIsRunning()) {
@@ -101,6 +105,9 @@ void DisplayLink::removeObserver(Client& client, DisplayLinkObserverID observerI
     LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " remove observer " << observerID);
 
     removeInfoForClientIfUnused(client);
+#if PLATFORM(MAC)
+    updatePlatformPreferredFramesPerSecond();
+#endif
 
     // We do not stop the display link right away when |m_clients| becomes empty. Instead, we
     // let the display link fire up to |maxFireCountWithoutObservers| times without observers to avoid
@@ -113,6 +120,9 @@ void DisplayLink::removeClient(Client& client)
 
     Locker locker { m_clientsLock };
     m_clients.remove(client);
+#if PLATFORM(MAC)
+    updatePlatformPreferredFramesPerSecond();
+#endif
 
     // We do not stop the display link right away when |m_clients| becomes empty. Instead, we
     // let the display link fire up to |maxFireCountWithoutObservers| times without observers to avoid
@@ -142,6 +152,9 @@ void DisplayLink::incrementFullSpeedRequestClientCount(Client& client)
     }).iterator->value;
 
     ++clientInfo.fullSpeedUpdatesClientCount;
+#if PLATFORM(MAC)
+    updatePlatformPreferredFramesPerSecond();
+#endif
 }
 
 void DisplayLink::decrementFullSpeedRequestClientCount(Client& client)
@@ -156,6 +169,9 @@ void DisplayLink::decrementFullSpeedRequestClientCount(Client& client)
     ASSERT(clientInfo.fullSpeedUpdatesClientCount);
     --clientInfo.fullSpeedUpdatesClientCount;
     removeInfoForClientIfUnused(client);
+#if PLATFORM(MAC)
+    updatePlatformPreferredFramesPerSecond();
+#endif
 }
 
 void DisplayLink::displayPropertiesChanged()
@@ -180,15 +196,79 @@ void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLin
 
     if (index != notFound)
         clientInfo.observers[index].preferredFramesPerSecond = preferredFramesPerSecond;
+#if PLATFORM(MAC)
+    updatePlatformPreferredFramesPerSecond();
+#endif
 }
 
-void DisplayLink::notifyObserversDisplayDidRefresh()
+// With frame timing, an observer at a given rate is due once the vsync time reaches its next update time
+// (within half a tick of the display link). Its next update time then advances by one interval, so the cadence
+// stays steady and in phase when the display link changes rate.
+static bool isDueForUpdate(std::optional<MonotonicTime>& nextUpdateTime, Seconds& updateInterval, const DisplayLinkFrameTiming& timing, FramesPerSecond framesPerSecond)
+{
+    if (!framesPerSecond)
+        return true;
+
+    auto interval = 1_s / framesPerSecond;
+    // Rates are whole numbers, often truncated from divisors of the refresh rate (165 / 2 = 82.5 is sent as 82),
+    // and panels may be slightly off their nominal rate. When the interval is about a whole number of vsyncs, pace
+    // on exactly those vsyncs, locked to the tick that fired, so that the due time doesn't drift against the ticks.
+    // Other rates keep their exact interval and are met on average.
+    unsigned vsyncsPerUpdate = 0;
+    if (timing.refreshInterval > 0_s) {
+        auto vsyncs = std::max(1.0, std::floor(interval / timing.refreshInterval + 0.05));
+        auto vsyncInterval = timing.refreshInterval * vsyncs;
+        if (std::abs((vsyncInterval - interval) / interval) < 0.05) {
+            interval = vsyncInterval;
+            vsyncsPerUpdate = static_cast<unsigned>(vsyncs);
+        }
+    }
+
+    // Keep whole-vsync cadences on the vsync phase the platform display link uses when it runs below the refresh
+    // rate, so that when it changes rate (at the end of a scroll, for example) its ticks keep landing on this
+    // cadence. Only when the link's ticks can reach that phase; an overdue update always fires.
+    if (vsyncsPerUpdate >= 2 && timing.vsyncPhase && timing.linkDivisor && !(vsyncsPerUpdate % timing.linkDivisor)) {
+        bool isOverdue = nextUpdateTime && timing.vsyncTime >= *nextUpdateTime + interval - timing.refreshInterval / 2;
+        bool isOnPhase = timing.vsyncIndex % vsyncsPerUpdate == *timing.vsyncPhase % vsyncsPerUpdate;
+        if (!isOnPhase && !isOverdue)
+            return false;
+        updateInterval = interval;
+        nextUpdateTime = timing.vsyncTime + interval;
+        return true;
+    }
+
+    // When the rate went up, pull in the due time that was computed with the previous, longer interval.
+    if (nextUpdateTime && interval < updateInterval)
+        nextUpdateTime = *nextUpdateTime - (updateInterval - interval);
+    updateInterval = interval;
+
+    // Tolerate half a tick of the display link: divisors of the link rate still land on exact ticks, and when
+    // the link slows down, the first tick of its new cadence isn't skipped just because it came slightly early.
+    auto linkInterval = timing.linkInterval > 0_s ? timing.linkInterval : timing.refreshInterval;
+    if (nextUpdateTime && timing.vsyncTime < *nextUpdateTime - linkInterval / 2)
+        return false;
+
+    // Don't try to catch up after a pause or a long frame.
+    if (nextUpdateTime && !vsyncsPerUpdate && timing.vsyncTime - *nextUpdateTime < interval)
+        nextUpdateTime = *nextUpdateTime + interval;
+    else
+        nextUpdateTime = timing.vsyncTime + interval;
+    return true;
+}
+
+void DisplayLink::notifyObserversDisplayDidRefresh(std::optional<DisplayLinkFrameTiming> timing)
 {
     ASSERT(!RunLoop::isMain());
 
     Locker locker { m_clientsLock };
 
     tracePoint(DisplayLinkUpdate);
+
+    // When the platform display link runs below the nominal rate, count updates at the rate it actually fires.
+    if (timing && timing->linkFramesPerSecond && timing->linkFramesPerSecond != m_currentUpdate.updatesPerSecond) {
+        LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " now firing at " << timing->linkFramesPerSecond << " fps");
+        m_currentUpdate = { 0, timing->linkFramesPerSecond };
+    }
 
     auto maxFramesPerSecond = [](const Vector<ObserverInfo, 1>& observers) {
         std::optional<FramesPerSecond> observersMaxFramesPerSecond;
@@ -205,13 +285,26 @@ void DisplayLink::notifyObserversDisplayDidRefresh()
         anyConnectionHadObservers = true;
 
         auto observersMaxFramesPerSecond = maxFramesPerSecond(clientInfo.observers);
-        bool anyObserverWantsCallback = m_currentUpdate.relevantForUpdateFrequency(observersMaxFramesPerSecond.value_or(FullSpeedFramesPerSecond));
+        auto clientFramesPerSecond = observersMaxFramesPerSecond.value_or(FullSpeedFramesPerSecond);
+        bool anyObserverWantsCallback;
+        auto displayUpdate = m_currentUpdate;
+        if (timing) {
+            anyObserverWantsCallback = isDueForUpdate(clientInfo.nextUpdateTime, clientInfo.updateInterval, *timing, clientFramesPerSecond);
+            // Count this client's updates at its own rate, so that clients that decimate the update again with
+            // DisplayUpdate::relevantForUpdateFrequency() (the WebProcess DisplayRefreshMonitor) agree with the decision.
+            if (clientFramesPerSecond) {
+                displayUpdate = { clientInfo.updateIndex % clientFramesPerSecond, clientFramesPerSecond };
+                if (anyObserverWantsCallback)
+                    clientInfo.updateIndex = displayUpdate.nextUpdate().updateIndex;
+            }
+        } else
+            anyObserverWantsCallback = m_currentUpdate.relevantForUpdateFrequency(clientFramesPerSecond);
 
         LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " (display fps " << m_displayNominalFramesPerSecond << ") update " << m_currentUpdate << " " << clientInfo.observers.size()
             << " observers, maxFramesPerSecond " << observersMaxFramesPerSecond << " full speed client count " << clientInfo.fullSpeedUpdatesClientCount << " relevant " << anyObserverWantsCallback);
 
         if (clientInfo.fullSpeedUpdatesClientCount || anyObserverWantsCallback)
-            CheckedRef { client }->displayLinkFired(m_displayID, m_currentUpdate, clientInfo.fullSpeedUpdatesClientCount, anyObserverWantsCallback);
+            CheckedRef { client }->displayLinkFired(m_displayID, displayUpdate, clientInfo.fullSpeedUpdatesClientCount, anyObserverWantsCallback);
     }
 
     m_currentUpdate = m_currentUpdate.nextUpdate();
@@ -225,6 +318,78 @@ void DisplayLink::notifyObserversDisplayDidRefresh()
     }
     m_fireCountWithoutObservers = 0;
 }
+
+#if PLATFORM(MAC)
+// Returns the divisor K of the nominal rate (the platform display link runs at nominal / K) that serves every
+// demand. Each demand d gets the largest divisor k whose rate nominal / k is at least d. The link runs at the greatest common
+// divisor of those, so that every observer gets an exact cadence, unless more than half of the ticks at that
+// rate would be unused; then it runs at the fastest demand, and slower observers get the nearest ticks.
+// There is deliberately no cap: the link runs as fast as the content asks.
+static unsigned displayLinkFrameRateDivisor(FramesPerSecond nominalFramesPerSecond, std::span<const FramesPerSecond> demands)
+{
+    Vector<unsigned, 4> divisors;
+    for (auto demand : demands) {
+        // The slowest rung that is at least the demand; the tolerance maps rates truncated to whole numbers
+        // (165 / 2 = 82.5 sent as 82) to their own divisor.
+        if (demand)
+            divisors.append(std::max(1u, static_cast<unsigned>(std::floor(static_cast<double>(nominalFramesPerSecond) / demand + 0.05))));
+    }
+    if (!nominalFramesPerSecond || divisors.isEmpty())
+        return 1;
+
+    unsigned greatestCommonDivisor = 0;
+    for (auto divisor : divisors)
+        greatestCommonDivisor = std::gcd(greatestCommonDivisor, divisor);
+    unsigned fastestDivisor = *std::min_element(divisors.begin(), divisors.end());
+    if (greatestCommonDivisor == fastestDivisor)
+        return fastestDivisor;
+
+    // Fraction of the ticks at the greatest common divisor that are due for at least one demand, over one cycle.
+    constexpr unsigned maximumCycle = 10000;
+    unsigned cycle = 1;
+    for (auto divisor : divisors) {
+        cycle = std::lcm(cycle, divisor);
+        if (cycle > maximumCycle)
+            break;
+    }
+    unsigned ticks = std::min(cycle, maximumCycle) / greatestCommonDivisor;
+    unsigned dueTicks = 0;
+    for (unsigned tick = 0; tick < ticks; ++tick) {
+        unsigned vsync = tick * greatestCommonDivisor;
+        if (std::ranges::any_of(divisors, [&](unsigned divisor) { return !(vsync % divisor); }))
+            ++dueTicks;
+    }
+    return 2 * dueTicks >= ticks ? greatestCommonDivisor : fastestDivisor;
+}
+
+void DisplayLink::updatePlatformPreferredFramesPerSecond()
+{
+    ASSERT(RunLoop::isMain());
+
+    Vector<FramesPerSecond, 4> demands;
+    for (auto& [client, clientInfo] : m_clients) {
+        if (clientInfo.observers.isEmpty())
+            continue;
+        if (clientInfo.fullSpeedUpdatesClientCount)
+            demands.append(m_displayNominalFramesPerSecond);
+        for (const auto& observer : clientInfo.observers)
+            demands.append(observer.preferredFramesPerSecond);
+    }
+
+    // With no observers, keep the current rate: the display link stops on its own after a few idle ticks.
+    if (demands.isEmpty())
+        return;
+
+    auto divisor = displayLinkFrameRateDivisor(m_displayNominalFramesPerSecond, demands.span());
+    if (divisor == m_platformFrameRateDivisor)
+        return;
+    m_platformFrameRateDivisor = divisor;
+
+    LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " requesting " << static_cast<double>(m_displayNominalFramesPerSecond) / divisor << " fps (divisor " << divisor << ") for demands " << demands);
+    if (RefPtr platformBackend = m_platformBackend)
+        platformBackend->setPreferredFramesPerSecond(divisor == 1 ? 0 : static_cast<double>(m_displayNominalFramesPerSecond) / divisor);
+}
+#endif // PLATFORM(MAC)
 
 DisplayLink& DisplayLinkCollection::displayLinkForDisplay(PlatformDisplayID displayID)
 {
