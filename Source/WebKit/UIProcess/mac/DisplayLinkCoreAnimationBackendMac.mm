@@ -330,10 +330,25 @@ void DisplayLinkCoreAnimationBackend::displayLinkFired(CADisplayLink *displayLin
         m_frameTiming.refreshInterval = Seconds { duration };
         m_frameTiming.vsyncIndex = std::llround(displayLink.timestamp / duration);
         m_frameTiming.linkDivisor = std::max(1U, static_cast<unsigned>(std::lround(linkInterval / duration)));
-        // Below the refresh rate, Core Animation fires on a fixed vsync phase (the same one for every divisor);
-        // learn it from the ticks so that cadences can stay on it while the link runs faster.
-        if (m_frameTiming.linkDivisor >= 2)
-            m_frameTiming.vsyncPhase = static_cast<unsigned>(m_frameTiming.vsyncIndex % m_frameTiming.linkDivisor);
+        // The vsync grid changes with the refresh interval, so phases learned before don't apply anymore.
+        if (previousTiming.refreshInterval > 0_s && std::abs(m_frameTiming.refreshInterval / previousTiming.refreshInterval - 1) > 0.001) {
+            if (m_options.logStatistics)
+                RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink display %u refresh interval changed %.6f -> %.6f ms; forgetting vsync phases", m_displayID, previousTiming.refreshInterval.milliseconds(), m_frameTiming.refreshInterval.milliseconds());
+            m_frameTiming.vsyncPhases = { };
+        }
+
+        // Below the refresh rate, Core Animation fires on a fixed vsync phase for each divisor (it depends on the
+        // display); learn it from steady ticks so that cadences can stay on it while the link runs faster, and
+        // forget phases of multiples of this divisor that these ticks contradict.
+        auto divisor = m_frameTiming.linkDivisor;
+        if (divisor >= 2 && divisor <= DisplayLinkFrameTiming::maximumVSyncPhaseDivisor && previousTiming.linkDivisor == divisor && m_frameTiming.vsyncIndex - previousTiming.vsyncIndex == divisor) {
+            auto residue = static_cast<uint8_t>(m_frameTiming.vsyncIndex % divisor);
+            m_frameTiming.vsyncPhases[divisor] = residue;
+            for (auto multiple = 2 * divisor; multiple <= DisplayLinkFrameTiming::maximumVSyncPhaseDivisor; multiple += divisor) {
+                if (auto& phase = m_frameTiming.vsyncPhases[multiple]; phase && *phase % divisor != residue)
+                    phase = std::nullopt;
+            }
+        }
     }
     m_frameTiming.vsyncTime = MonotonicTime::fromRawSeconds(displayLink.timestamp);
     if (m_options.logStatistics && previousTiming.linkFramesPerSecond && previousTiming.linkFramesPerSecond != m_frameTiming.linkFramesPerSecond) {

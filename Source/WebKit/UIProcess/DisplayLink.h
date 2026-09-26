@@ -31,6 +31,7 @@
 #include <WebCore/AnimationFrameRate.h>
 #include <WebCore/DisplayUpdate.h>
 #include <WebCore/PlatformScreen.h>
+#include <array>
 #include <wtf/CheckedPtr.h>
 #include <wtf/HashMap.h>
 #include <wtf/Lock.h>
@@ -60,9 +61,10 @@ struct DisplayLinkFrameTiming {
     Seconds refreshInterval; // The display's refresh interval.
     uint64_t vsyncIndex { 0 }; // The vsync count of this tick (vsyncTime / refreshInterval).
     unsigned linkDivisor { 0 }; // The number of vsyncs between two ticks of the platform display link.
-    // The vsync index, modulo the divisor, on which the platform display link fires when it runs below the
-    // refresh rate, if known. Cadences kept on this phase stay steady when the link changes rate.
-    std::optional<unsigned> vsyncPhase;
+    // For each divisor, the vsync index modulo that divisor on which the platform display link fires when it
+    // runs at that divisor, if it has been seen. Cadences kept on this phase stay steady when the link changes rate.
+    static constexpr unsigned maximumVSyncPhaseDivisor = 16;
+    std::array<std::optional<uint8_t>, maximumVSyncPhaseDivisor + 1> vsyncPhases;
 };
 
 #if PLATFORM(MAC)
@@ -122,6 +124,7 @@ public:
     void incrementFullSpeedRequestClientCount(Client&);
     void decrementFullSpeedRequestClientCount(Client&);
 
+    // A preferred rate of 0 means no rate preference: the observer doesn't make the display link run faster.
     void setObserverPreferredFramesPerSecond(Client&, DisplayLinkObserverID, WebCore::FramesPerSecond);
 
 #if PLATFORM(GTK) || PLATFORM(WPE)
@@ -185,6 +188,8 @@ private:
     WebCore::FramesPerSecond m_displayNominalFramesPerSecond { WebCore::FullSpeedFramesPerSecond };
     WebCore::DisplayUpdate m_currentUpdate;
     unsigned m_fireCountWithoutObservers { 0 };
+    // With frame timing: the vsync of the first tick without observers, so that slow display links also stop soon.
+    std::optional<MonotonicTime> m_firstTickWithoutObserversTime;
 };
 
 class DisplayLinkCollection {

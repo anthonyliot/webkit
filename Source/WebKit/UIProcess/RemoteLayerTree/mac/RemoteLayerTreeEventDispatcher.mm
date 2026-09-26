@@ -236,8 +236,7 @@ void RemoteLayerTreeEventDispatcher::willHandleWheelEvent(Ref<WebWheelEvent>&& w
 {
     ASSERT(isMainRunLoop());
     
-    m_wheelEventActivityHysteresis.impulse();
-
+    // Start the idle timer first, so that the observer started by the hysteresis asks for the full rate right away.
     if (!m_scrollingIdleTimer) {
         m_scrollingIdleTimer = makeUnique<RunLoop::Timer>(RunLoop::mainSingleton(), "RemoteLayerTreeEventDispatcher::ScrollingIdleTimer"_s, [weakThis = ThreadSafeWeakPtr { *this }] {
             if (RefPtr protectedThis = weakThis)
@@ -245,6 +244,8 @@ void RemoteLayerTreeEventDispatcher::willHandleWheelEvent(Ref<WebWheelEvent>&& w
         });
     }
     m_scrollingIdleTimer->startOneShot(scrollingIdleDelay);
+
+    m_wheelEventActivityHysteresis.impulse();
     updateDisplayLinkObserverFramesPerSecond();
 
     m_wheelEventsBeingProcessed.append(WTF::move(wheelEvent));
@@ -492,11 +493,11 @@ void RemoteLayerTreeEventDispatcher::updateDisplayLinkObserverFramesPerSecond()
     }();
 
     // While scrolling is live, the scrolling thread needs every frame the display can show. Otherwise it only
-    // stays registered to avoid restarting the display link between wheel events, and doesn't need it to run
-    // faster than the default rate. Only lower the rate when the display link actually slows down for it;
-    // otherwise lowering it would only drop this observer's ticks.
-    bool lowerRate = !needsFullSpeed && displayLink->platformSupportsPreferredFramesPerSecond();
-    auto framesPerSecond = lowerRate ? FullSpeedFramesPerSecond : displayLink->nominalFramesPerSecond();
+    // stays registered to avoid restarting the display link between wheel events, and has no rate preference (0),
+    // so the display link runs at the rate the other observers need. Only do this when the display link actually
+    // runs at its observers' rate; otherwise it would only change which ticks this observer gets.
+    bool hasNoRatePreference = !needsFullSpeed && displayLink->platformSupportsPreferredFramesPerSecond();
+    auto framesPerSecond = hasNoRatePreference ? 0 : displayLink->nominalFramesPerSecond();
     if (m_displayRefreshObserverFramesPerSecond == framesPerSecond)
         return;
 

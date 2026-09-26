@@ -41,6 +41,12 @@ namespace WebKit {
 using namespace WebCore;
 
 constexpr unsigned maxFireCountWithoutObservers { 20 };
+// With frame timing, also stop after this long without observers, since 20 ticks take long at low rates.
+constexpr Seconds maxDurationWithoutObservers { 333_ms };
+#if PLATFORM(MAC)
+// The rate when observers are registered but none has a rate preference.
+constexpr FramesPerSecond idleFramesPerSecond { 10 };
+#endif
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(DisplayLink);
 WTF_MAKE_TZONE_ALLOCATED_IMPL(DisplayLink::Client);
@@ -224,19 +230,6 @@ static bool isDueForUpdate(std::optional<MonotonicTime>& nextUpdateTime, Seconds
         }
     }
 
-    // Keep whole-vsync cadences on the vsync phase the platform display link uses when it runs below the refresh
-    // rate, so that when it changes rate (at the end of a scroll, for example) its ticks keep landing on this
-    // cadence. Only when the link's ticks can reach that phase; an overdue update always fires.
-    if (vsyncsPerUpdate >= 2 && timing.vsyncPhase && timing.linkDivisor && !(vsyncsPerUpdate % timing.linkDivisor)) {
-        bool isOverdue = nextUpdateTime && timing.vsyncTime >= *nextUpdateTime + interval - timing.refreshInterval / 2;
-        bool isOnPhase = timing.vsyncIndex % vsyncsPerUpdate == *timing.vsyncPhase % vsyncsPerUpdate;
-        if (!isOnPhase && !isOverdue)
-            return false;
-        updateInterval = interval;
-        nextUpdateTime = timing.vsyncTime + interval;
-        return true;
-    }
-
     // When the rate went up, pull in the due time that was computed with the previous, longer interval.
     if (nextUpdateTime && interval < updateInterval)
         nextUpdateTime = *nextUpdateTime - (updateInterval - interval);
@@ -245,6 +238,33 @@ static bool isDueForUpdate(std::optional<MonotonicTime>& nextUpdateTime, Seconds
     // Tolerate half a tick of the display link: divisors of the link rate still land on exact ticks, and when
     // the link slows down, the first tick of its new cadence isn't skipped just because it came slightly early.
     auto linkInterval = timing.linkInterval > 0_s ? timing.linkInterval : timing.refreshInterval;
+
+    // Keep whole-vsync cadences on the vsync phase the platform display link uses when it runs at that cadence, so
+    // that when it changes rate (at the end of a scroll, for example) its ticks keep landing on this cadence. Only
+    // when that phase is known and consistent with the ticks the link fires now.
+    std::optional<unsigned> vsyncPhase;
+    if (vsyncsPerUpdate >= 2 && vsyncsPerUpdate <= DisplayLinkFrameTiming::maximumVSyncPhaseDivisor && timing.linkDivisor && !(vsyncsPerUpdate % timing.linkDivisor)) {
+        if (auto phase = timing.vsyncPhases[vsyncsPerUpdate]; phase && *phase % timing.linkDivisor == timing.vsyncIndex % timing.linkDivisor)
+            vsyncPhase = *phase;
+    }
+    if (vsyncPhase) {
+        // Due times stay on the phase. A due tick fires even off the phase (when the link thread was late, Core
+        // Animation skips the vsyncs it missed, including the on-phase one), and the next update goes back to the
+        // phase, 0.5 to 1.5 intervals later. A new observer starts on the phase.
+        auto vsyncsSincePhase = static_cast<unsigned>((timing.vsyncIndex + vsyncsPerUpdate - *vsyncPhase) % vsyncsPerUpdate);
+        auto vsyncsToPhase = vsyncsPerUpdate - vsyncsSincePhase;
+        if (!nextUpdateTime && vsyncsSincePhase) {
+            nextUpdateTime = timing.vsyncTime + timing.refreshInterval * static_cast<double>(vsyncsToPhase);
+            return false;
+        }
+        if (nextUpdateTime && timing.vsyncTime < *nextUpdateTime - linkInterval / 2)
+            return false;
+        if (2 * vsyncsToPhase <= vsyncsPerUpdate)
+            vsyncsToPhase += vsyncsPerUpdate;
+        nextUpdateTime = timing.vsyncTime + timing.refreshInterval * static_cast<double>(vsyncsToPhase);
+        return true;
+    }
+
     if (nextUpdateTime && timing.vsyncTime < *nextUpdateTime - linkInterval / 2)
         return false;
 
@@ -310,13 +330,21 @@ void DisplayLink::notifyObserversDisplayDidRefresh(std::optional<DisplayLinkFram
     m_currentUpdate = m_currentUpdate.nextUpdate();
 
     if (!anyConnectionHadObservers) {
-        if (++m_fireCountWithoutObservers >= maxFireCountWithoutObservers) {
+        bool withoutObserversForLong = false;
+        if (timing) {
+            if (!m_firstTickWithoutObserversTime)
+                m_firstTickWithoutObserversTime = timing->vsyncTime;
+            withoutObserversForLong = timing->vsyncTime - *m_firstTickWithoutObserversTime >= maxDurationWithoutObservers;
+        }
+        if (++m_fireCountWithoutObservers >= maxFireCountWithoutObservers || withoutObserversForLong) {
             LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink for display " << m_displayID << " fired " << m_fireCountWithoutObservers << " times with no observers; stopping DisplayLink");
+            m_firstTickWithoutObserversTime = std::nullopt;
             platformStop();
         }
         return;
     }
     m_fireCountWithoutObservers = 0;
+    m_firstTickWithoutObserversTime = std::nullopt;
 }
 
 #if PLATFORM(MAC)
@@ -379,6 +407,10 @@ void DisplayLink::updatePlatformPreferredFramesPerSecond()
     // With no observers, keep the current rate: the display link stops on its own after a few idle ticks.
     if (demands.isEmpty())
         return;
+
+    // Observers that have no rate preference don't need the display link to run fast.
+    if (!std::ranges::any_of(demands, [](auto demand) { return demand > 0; }))
+        demands = { idleFramesPerSecond };
 
     auto divisor = displayLinkFrameRateDivisor(m_displayNominalFramesPerSecond, demands.span());
     if (divisor == m_platformFrameRateDivisor)
