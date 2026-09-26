@@ -261,6 +261,12 @@ void DisplayLink::platformFinalize()
     }
 }
 
+bool DisplayLink::platformSupportsPreferredFramesPerSecond() const
+{
+    RefPtr platformBackend = m_platformBackend;
+    return platformBackend && platformBackend->supportsPreferredFramesPerSecond();
+}
+
 bool DisplayLink::platformIsRunning() const
 {
     RefPtr platformBackend = m_platformBackend;

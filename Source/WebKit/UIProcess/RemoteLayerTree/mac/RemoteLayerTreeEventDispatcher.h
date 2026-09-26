@@ -145,6 +145,7 @@ private:
     void startOrStopDisplayLink();
     void startOrStopDisplayLinkOnMainThread();
     void removeDisplayLinkClient();
+    void updateDisplayLinkObserverFramesPerSecond();
 
     void scheduleDelayedRenderingUpdateDetectionTimer(Seconds delay);
     void delayedRenderingUpdateDetectionTimerFired();
@@ -192,6 +193,11 @@ private:
     std::unique_ptr<WebCore::WheelEventDeltaFilter> m_wheelEventDeltaFilter;
     std::unique_ptr<RemoteLayerTreeEventDispatcherDisplayLinkClient> m_displayLinkClient;
     std::optional<DisplayLinkObserverID> m_displayRefreshObserverID;
+    // Main thread. The rate requested for m_displayRefreshObserverID: the display's full rate only while scrolling
+    // is live (m_scrollingIdleTimer is active after a wheel event, or momentum or animations are running), so that
+    // the display link can slow down for the rest of the wheel event hysteresis.
+    std::optional<WebCore::FramesPerSecond> m_displayRefreshObserverFramesPerSecond;
+    std::unique_ptr<RunLoop::Timer> m_scrollingIdleTimer;
     PAL::HysteresisActivity m_wheelEventActivityHysteresis;
 
     std::atomic<bool> m_fingerDownIntervalIsActive = false;
@@ -221,7 +227,8 @@ private:
 #endif
 
 #if ENABLE(MOMENTUM_EVENT_DISPATCHER)
-    bool m_momentumEventDispatcherNeedsDisplayLink { false };
+    // Written on the scrolling thread and on the main thread, read on the main thread.
+    std::atomic<bool> m_momentumEventDispatcherNeedsDisplayLink { false };
     Lock m_momentumEventDispatcherLock;
     std::unique_ptr<MomentumEventDispatcher> m_momentumEventDispatcher WTF_GUARDED_BY_LOCK(m_momentumEventDispatcherLock);
 #endif

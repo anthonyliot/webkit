@@ -104,6 +104,10 @@ Ref<RemoteLayerTreeEventDispatcher> RemoteLayerTreeEventDispatcher::create(Remot
 }
 
 static constexpr Seconds wheelEventHysteresisDuration { 500_ms };
+// How long after a wheel event the scrolling thread keeps asking the display link for the display's full rate.
+// Must exceed ScrollingEffectsController's discrete scroll snap delay (100 ms): for wheel events without phases,
+// the snap animation starts that long after the scrolling thread handles the event, after this timer started.
+static constexpr Seconds scrollingIdleDelay { 150_ms };
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(RemoteLayerTreeEventDispatcher);
 
@@ -145,6 +149,7 @@ void RemoteLayerTreeEventDispatcher::invalidate()
     // does not fire a spurious state change while we tear down. Its timer is safe to destroy because
     // this object is destroyed on the main run loop (see DestructionThread::MainRunLoop).
     m_wheelEventActivityHysteresis.cancel();
+    m_scrollingIdleTimer = nullptr;
 
     {
         Locker locker { m_scrollingTreeLock };
@@ -232,6 +237,16 @@ void RemoteLayerTreeEventDispatcher::willHandleWheelEvent(Ref<WebWheelEvent>&& w
     ASSERT(isMainRunLoop());
     
     m_wheelEventActivityHysteresis.impulse();
+
+    if (!m_scrollingIdleTimer) {
+        m_scrollingIdleTimer = makeUnique<RunLoop::Timer>(RunLoop::mainSingleton(), "RemoteLayerTreeEventDispatcher::ScrollingIdleTimer"_s, [weakThis = ThreadSafeWeakPtr { *this }] {
+            if (RefPtr protectedThis = weakThis)
+                protectedThis->updateDisplayLinkObserverFramesPerSecond();
+        });
+    }
+    m_scrollingIdleTimer->startOneShot(scrollingIdleDelay);
+    updateDisplayLinkObserverFramesPerSecond();
+
     m_wheelEventsBeingProcessed.append(WTF::move(wheelEvent));
 }
 
@@ -444,6 +459,50 @@ void RemoteLayerTreeEventDispatcher::startOrStopDisplayLinkOnMainThread()
         startDisplayLinkObserver();
     else
         stopDisplayLinkObserver();
+
+    updateDisplayLinkObserverFramesPerSecond();
+}
+
+void RemoteLayerTreeEventDispatcher::updateDisplayLinkObserverFramesPerSecond()
+{
+    ASSERT(isMainRunLoop());
+    if (!m_displayRefreshObserverID)
+        return;
+
+    auto* displayLink = existingDisplayLink();
+    if (!displayLink)
+        return;
+
+    auto needsFullSpeed = [&] {
+        if (m_scrollingIdleTimer && m_scrollingIdleTimer->isActive())
+            return true;
+#if ENABLE(MOMENTUM_EVENT_DISPATCHER)
+        if (m_momentumEventDispatcherNeedsDisplayLink)
+            return true;
+#endif
+#if ENABLE(THREADED_ANIMATIONS)
+        {
+            Locker lock { m_animationLock };
+            if (!m_animationStacks.isEmpty() || (m_monotonicTimelineRegistry && !m_monotonicTimelineRegistry->isEmpty()))
+                return true;
+        }
+#endif
+        auto scrollingTree = this->scrollingTree();
+        return scrollingTree && scrollingTree->hasNodeWithActiveScrollAnimations();
+    }();
+
+    // While scrolling is live, the scrolling thread needs every frame the display can show. Otherwise it only
+    // stays registered to avoid restarting the display link between wheel events, and doesn't need it to run
+    // faster than the default rate. Only lower the rate when the display link actually slows down for it;
+    // otherwise lowering it would only drop this observer's ticks.
+    bool lowerRate = !needsFullSpeed && displayLink->platformSupportsPreferredFramesPerSecond();
+    auto framesPerSecond = lowerRate ? FullSpeedFramesPerSecond : displayLink->nominalFramesPerSecond();
+    if (m_displayRefreshObserverFramesPerSecond == framesPerSecond)
+        return;
+
+    LOG_WITH_STREAM(DisplayLink, stream << "[UI ] RemoteLayerTreeEventDispatcher::updateDisplayLinkObserverFramesPerSecond " << framesPerSecond);
+    m_displayRefreshObserverFramesPerSecond = framesPerSecond;
+    displayLink->setObserverPreferredFramesPerSecond(*protect(m_displayLinkClient), *m_displayRefreshObserverID, framesPerSecond);
 }
 
 void RemoteLayerTreeEventDispatcher::startDisplayLinkObserver()
@@ -459,8 +518,9 @@ void RemoteLayerTreeEventDispatcher::startDisplayLinkObserver()
     LOG_WITH_STREAM(DisplayLink, stream << "[UI ] RemoteLayerTreeEventDispatcher::startDisplayLinkObserver");
 
     m_displayRefreshObserverID = DisplayLinkObserverID::generate();
-    // This display link always runs at the display update frequency (e.g. 120Hz).
-    displayLink->addObserver(*protect(m_displayLinkClient), *m_displayRefreshObserverID, displayLink->nominalFramesPerSecond());
+    // This observer asks for the display update frequency (e.g. 120Hz) while scrolling is live; see updateDisplayLinkObserverFramesPerSecond().
+    m_displayRefreshObserverFramesPerSecond = displayLink->nominalFramesPerSecond();
+    displayLink->addObserver(*protect(m_displayLinkClient), *m_displayRefreshObserverID, *m_displayRefreshObserverFramesPerSecond);
 }
 
 void RemoteLayerTreeEventDispatcher::stopDisplayLinkObserver()
@@ -476,6 +536,7 @@ void RemoteLayerTreeEventDispatcher::stopDisplayLinkObserver()
 
     displayLink->removeObserver(*protect(m_displayLinkClient), *m_displayRefreshObserverID);
     m_displayRefreshObserverID = { };
+    m_displayRefreshObserverFramesPerSecond = std::nullopt;
 }
 
 void RemoteLayerTreeEventDispatcher::removeDisplayLinkClient()
@@ -485,6 +546,7 @@ void RemoteLayerTreeEventDispatcher::removeDisplayLinkClient()
     if (RefPtr processPool = m_processPool.get())
         processPool->displayLinks().stopDisplayLinks(*protect(m_displayLinkClient));
     m_displayRefreshObserverID = { };
+    m_displayRefreshObserverFramesPerSecond = std::nullopt;
 }
 
 void RemoteLayerTreeEventDispatcher::didRefreshDisplay(PlatformDisplayID displayID)

@@ -107,6 +107,8 @@ public:
         scheduleSynchronizePausedState();
     }
 
+    bool supportsPreferredFramesPerSecond() const final { return m_options.frameRateControl; }
+
     void setPreferredFramesPerSecond(double framesPerSecond) final
     {
         if (!m_options.frameRateControl)

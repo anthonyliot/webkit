@@ -78,8 +78,9 @@ public:
     virtual void start() = 0;
     virtual void stop() = 0;
     // The rate the observers need, a divisor of the nominal rate; 0 means the display's native rate.
-    // Backends that can't change their rate ignore this.
+    // Backends that can't change their rate ignore this, and return false from supportsPreferredFramesPerSecond().
     virtual void setPreferredFramesPerSecond(double) { }
+    virtual bool supportsPreferredFramesPerSecond() const { return false; }
     // Called on the main thread before the DisplayLink is destroyed; no callback reaches the DisplayLink afterwards.
     virtual void invalidate() = 0;
 };
@@ -128,6 +129,9 @@ public:
 #endif
 
 #if PLATFORM(MAC)
+    // Whether the display link runs at the rate its observers need, rather than always at the nominal rate.
+    bool platformSupportsPreferredFramesPerSecond() const;
+
     // Called by DisplayLinkPlatformBackend on its display link thread.
     void platformBackendDidFire(std::optional<DisplayLinkFrameTiming> timing = std::nullopt) { notifyObserversDisplayDidRefresh(timing); }
 #endif
