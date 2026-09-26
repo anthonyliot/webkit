@@ -156,11 +156,42 @@ void DrawingAreaProxy::viewExposedRectChangedTimerFired()
 void DrawingAreaProxy::addOutstandingPresentationUpdateCallback(IPC::Connection& connection, AsyncReplyID callbackID)
 {
     m_outstandingPresentationUpdateCallbacks.add({ connection.uniqueID(), callbackID });
+    outstandingPresentationUpdateCallbacksChanged();
 }
 
 void DrawingAreaProxy::removeOutstandingPresentationUpdateCallback(IPC::Connection& connection, AsyncReplyID callbackID)
 {
-    m_outstandingPresentationUpdateCallbacks.remove({ connection.uniqueID(), callbackID });
+    if (m_outstandingPresentationUpdateCallbacks.remove({ connection.uniqueID(), callbackID }))
+        outstandingPresentationUpdateCallbacksChanged();
+}
+
+// Callbacks sent to a closed connection, or to a process that no longer draws into this drawing area, will never
+// come back in a commit: call them, like stopReceivingMessages() does. This can run while a remote page is torn down,
+// so the callbacks run from the run loop.
+void DrawingAreaProxy::removeOutstandingPresentationUpdateCallbacks(std::optional<IPC::Connection::UniqueID> closedConnectionID)
+{
+    Vector<CompletionHandler<void(IPC::Connection*, IPC::Decoder*)>> callbacks;
+    bool removedCallbacks = m_outstandingPresentationUpdateCallbacks.removeIf([&](auto& entry) {
+        auto [connectionID, callbackID] = entry;
+        RefPtr connection = IPC::Connection::connection(connectionID);
+        if (connection && connection->isValid() && connectionID != closedConnectionID)
+            return false;
+        if (connection) {
+            if (auto callback = connection->takeAsyncReplyHandler(callbackID))
+                callbacks.append(WTF::move(callback));
+        }
+        return true;
+    });
+    if (!removedCallbacks)
+        return;
+
+    if (!callbacks.isEmpty()) {
+        RunLoop::mainSingleton().dispatch([callbacks = WTF::move(callbacks)] mutable {
+            for (auto& callback : callbacks)
+                callback(nullptr, nullptr);
+        });
+    }
+    outstandingPresentationUpdateCallbacksChanged();
 }
 
 } // namespace WebKit

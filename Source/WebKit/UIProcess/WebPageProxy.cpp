@@ -17363,6 +17363,9 @@ void WebPageProxy::updatePlayingMediaDidChange(CanDelayNotification canDelayNoti
         if (userMediaPermissionRequestManager)
             userMediaPermissionRequestManager->captureStateChanged(oldMediaCaptureState, newMediaCaptureState);
 
+        if (RefPtr drawingArea = m_drawingArea)
+            drawingArea->mediaCaptureStateDidChange();
+
 #if ENABLE(MEDIA_STREAM) && ENABLE(GPU_PROCESS)
         if (protect(preferences())->captureAudioInGPUProcessEnabled() && newMediaCaptureState & WebCore::MediaProducerMediaState::HasActiveAudioCaptureDevice)
             protect(protect(configuration().processPool())->ensureGPUProcess())->setPageUsingMicrophone(identifier());

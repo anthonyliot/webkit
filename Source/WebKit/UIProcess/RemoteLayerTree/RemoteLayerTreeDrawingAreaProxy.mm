@@ -129,6 +129,11 @@ void RemoteLayerTreeDrawingAreaProxy::removeRemotePageDrawingAreaProxy(RemotePag
 {
     ASSERT(m_remotePageProcessState.contains(proxy.process().coreProcessIdentifier()));
     m_remotePageProcessState.remove(proxy.process().coreProcessIdentifier());
+
+    if (proxy.process().hasConnection())
+        removeOutstandingPresentationUpdateCallbacks(proxy.process().connection().uniqueID());
+    else
+        removeOutstandingPresentationUpdateCallbacks();
 }
 
 ProcessState::ProcessState(WebProcessProxy& webProcess)
@@ -173,6 +178,8 @@ TransactionID RemoteLayerTreeDrawingAreaProxy::lastCommittedMainFrameLayerTreeTr
 
 void RemoteLayerTreeDrawingAreaProxy::remotePageProcessDidTerminate(WebCore::ProcessIdentifier processIdentifier)
 {
+    removeOutstandingPresentationUpdateCallbacks();
+
     if (!m_remoteLayerTreeHost)
         return;
 

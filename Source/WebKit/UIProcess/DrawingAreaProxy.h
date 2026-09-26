@@ -152,6 +152,9 @@ public:
     virtual void remotePageProcessDidTerminate(WebCore::ProcessIdentifier) { }
 
     void addOutstandingPresentationUpdateCallback(IPC::Connection&, AsyncReplyID);
+    bool hasOutstandingPresentationUpdateCallbacks() const { return !m_outstandingPresentationUpdateCallbacks.isEmpty(); }
+
+    virtual void mediaCaptureStateDidChange() { }
 
 protected:
     DrawingAreaProxy(WebPageProxy&, WebProcessProxy&);
@@ -159,6 +162,8 @@ protected:
     WebProcessProxy& webProcessProxy() const { return m_webProcessProxy; }
 
     void removeOutstandingPresentationUpdateCallback(IPC::Connection&, AsyncReplyID);
+    void removeOutstandingPresentationUpdateCallbacks(std::optional<IPC::Connection::UniqueID> closedConnectionID = std::nullopt);
+    virtual void outstandingPresentationUpdateCallbacksChanged() { }
 
 private:
     virtual void sizeDidChange() = 0;

@@ -530,7 +530,7 @@ void RemoteLayerTreeDrawingAreaProxyMac::scheduleDisplayRefreshCallbacks()
 
     auto& displayLink = this->displayLink();
     m_displayRefreshObserverID = DisplayLinkObserverID::generate();
-    displayLink.addObserver(m_displayLinkClient, *m_displayRefreshObserverID, m_clientPreferredFramesPerSecond);
+    displayLink.addObserver(m_displayLinkClient, *m_displayRefreshObserverID, displayRefreshObserverFramesPerSecond());
     if (m_shouldLogNextObserverChange) {
         RefPtr webPageProxy = page();
         if (webPageProxy) {
@@ -561,9 +561,44 @@ void RemoteLayerTreeDrawingAreaProxyMac::setPreferredFramesPerSecond(IPC::Connec
         return;
     }
 
+    updateDisplayRefreshObserverFramesPerSecond();
+}
+
+// Hidden and occluded views don't need to update often, unless something waits for their next presentation update,
+// or the page captures video: WebGL and WebGPU canvas capture and requestVideoFrameCallback run in rendering updates.
+// Rendering updates that follow another one are paced at this rate, so a page that loads while hidden can report
+// its paint milestones up to one tick later. Recording a canvas without capturing video is also paced at this rate.
+static constexpr WebCore::FramesPerSecond hiddenViewFramesPerSecond = 10;
+
+WebCore::FramesPerSecond RemoteLayerTreeDrawingAreaProxyMac::displayRefreshObserverFramesPerSecond()
+{
+    RefPtr page = this->page();
+    if (!page || page->isViewVisible() || page->isCapturingVideo() || hasOutstandingPresentationUpdateCallbacks())
+        return m_clientPreferredFramesPerSecond;
+
+    // Only when the display link actually slows down for it; otherwise this would only drop this observer's ticks.
+    auto* displayLink = existingDisplayLink();
+    if (!displayLink || !displayLink->platformSupportsPreferredFramesPerSecond())
+        return m_clientPreferredFramesPerSecond;
+
+    return std::min(m_clientPreferredFramesPerSecond, hiddenViewFramesPerSecond);
+}
+
+void RemoteLayerTreeDrawingAreaProxyMac::updateDisplayRefreshObserverFramesPerSecond()
+{
     auto* displayLink = existingDisplayLink();
     if (m_displayRefreshObserverID && displayLink)
-        displayLink->setObserverPreferredFramesPerSecond(m_displayLinkClient, *m_displayRefreshObserverID, preferredFramesPerSecond);
+        displayLink->setObserverPreferredFramesPerSecond(m_displayLinkClient, *m_displayRefreshObserverID, displayRefreshObserverFramesPerSecond());
+}
+
+void RemoteLayerTreeDrawingAreaProxyMac::outstandingPresentationUpdateCallbacksChanged()
+{
+    updateDisplayRefreshObserverFramesPerSecond();
+}
+
+void RemoteLayerTreeDrawingAreaProxyMac::mediaCaptureStateDidChange()
+{
+    updateDisplayRefreshObserverFramesPerSecond();
 }
 
 void RemoteLayerTreeDrawingAreaProxyMac::windowScreenDidChange(PlatformDisplayID displayID)
@@ -601,12 +636,14 @@ void RemoteLayerTreeDrawingAreaProxyMac::viewIsBecomingVisible()
 {
     m_shouldLogNextObserverChange = true;
     m_shouldLogNextDisplayRefresh = true;
+    updateDisplayRefreshObserverFramesPerSecond();
 }
 
 void RemoteLayerTreeDrawingAreaProxyMac::viewIsBecomingInvisible()
 {
     m_shouldLogNextObserverChange = false;
     m_shouldLogNextDisplayRefresh = false;
+    updateDisplayRefreshObserverFramesPerSecond();
 }
 
 std::optional<WebCore::FramesPerSecond> RemoteLayerTreeDrawingAreaProxyMac::displayNominalFramesPerSecond()

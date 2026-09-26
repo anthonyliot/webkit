@@ -94,6 +94,11 @@ private:
 
     void viewIsBecomingVisible() final;
     void viewIsBecomingInvisible() final;
+    void outstandingPresentationUpdateCallbacksChanged() final;
+    void mediaCaptureStateDidChange() final;
+
+    WebCore::FramesPerSecond displayRefreshObserverFramesPerSecond();
+    void updateDisplayRefreshObserverFramesPerSecond();
 
     void didChangeViewExposedRect() override;
 

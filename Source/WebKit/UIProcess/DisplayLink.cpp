@@ -200,8 +200,10 @@ void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLin
         return observer.observerID == observerID;
     });
 
-    if (index != notFound)
-        clientInfo.observers[index].preferredFramesPerSecond = preferredFramesPerSecond;
+    if (index == notFound || clientInfo.observers[index].preferredFramesPerSecond == preferredFramesPerSecond)
+        return;
+
+    clientInfo.observers[index].preferredFramesPerSecond = preferredFramesPerSecond;
 #if PLATFORM(MAC)
     updatePlatformPreferredFramesPerSecond();
 #endif
