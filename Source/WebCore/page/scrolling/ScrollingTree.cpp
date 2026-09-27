@@ -333,6 +333,9 @@ void ScrollingTree::removeNode(ScrollingNodeID nodeID, ScrollingTreeFrameHosting
                 nodeList->value.remove(nodeID);
         }
         removeFromActiveNodes(*node);
+        // A scroll animation of a node that goes away can't end anymore; otherwise hasNodeWithActiveScrollAnimations()
+        // stays true, and the scrolling thread keeps asking for display refreshes.
+        setScrollAnimationInProgressForNode(nodeID, false);
         if (hostingNode)
             hostingNode->removeHostedChild(*node);
         node->willBeDestroyed();
@@ -605,6 +608,13 @@ void ScrollingTree::removeAllNodes()
     // Every node is going away, so no entry in the active sets can still be resolved via nodeForID().
     m_activePositionedNodes.clear();
     m_activeOverflowScrollProxyNodes.clear();
+    {
+        Locker locker { m_treeStateLock };
+        if (!m_treeState.nodesWithActiveScrollAnimations.isEmpty()) {
+            m_treeState.nodesWithActiveScrollAnimations.clear();
+            hasNodeWithAnimatedScrollChanged(false);
+        }
+    }
 
     for (auto iter : nodes)
         Ref { iter.value }->willBeDestroyed();

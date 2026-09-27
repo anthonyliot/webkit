@@ -297,10 +297,11 @@ RefPtr<ScrollingTreeNode> ScrollingTreeCoordinated::scrollingNodeForPoint(FloatP
 #if HAVE(DISPLAY_LINK)
 void ScrollingTreeCoordinated::hasNodeWithAnimatedScrollChanged(bool hasNodeWithAnimatedScroll)
 {
-    ASSERT(ScrollingThread::isCurrentThread());
-
-    if (hasNodeWithAnimatedScroll)
+    // Animations start on the scrolling thread, but a commit on the main thread can remove the last animating node.
+    if (hasNodeWithAnimatedScroll) {
+        ASSERT(ScrollingThread::isCurrentThread());
         didScheduleRenderingUpdate();
+    }
 
     RefPtr scrollingCoordinator = m_scrollingCoordinator;
     if (!scrollingCoordinator)

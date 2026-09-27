@@ -145,14 +145,17 @@ void ThreadedScrollingTree::invalidate()
     ASSERT(ScrollingThread::isCurrentThread());
 
     Locker locker { m_treeLock };
-    
+
+    // Detach from the scrolling coordinator before removing the nodes: its page is gone, so the notifications that
+    // removing the nodes sends (like hasNodeWithAnimatedScrollChanged()) must not reach it.
+    auto scrollingCoordinator = std::exchange(m_scrollingCoordinator, nullptr);
     removeAllNodes();
     m_delayedRenderingUpdateDetectionTimer = nullptr;
 
     // Since this can potentially be the last reference to the scrolling coordinator,
     // we need to release it on the main thread since it has member variables (such as timers)
     // that expect to be destroyed from the main thread.
-    RunLoop::mainSingleton().dispatch([scrollingCoordinator = WTF::move(m_scrollingCoordinator)] {
+    RunLoop::mainSingleton().dispatch([scrollingCoordinator = WTF::move(scrollingCoordinator)] {
     });
 }
 
