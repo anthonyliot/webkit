@@ -1451,6 +1451,11 @@ void WebProcessPool::displayLinkPropertiesChanged(WebCore::PlatformDisplayID dis
     if (!displayLink || !displayLink->displayPropertiesChanged(displayWasAdded))
         return;
 
+    displayNominalFramesPerSecondDidChange(displayID);
+}
+
+void WebProcessPool::displayNominalFramesPerSecondDidChange(WebCore::PlatformDisplayID displayID)
+{
     for (Ref process : m_processes) {
         for (Ref page : process->mainPages()) {
             if (page->displayID() == displayID)

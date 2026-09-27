@@ -83,6 +83,9 @@ private:
 
     void setAlwaysBounceVertical(bool) final;
     void setAlwaysBounceHorizontal(bool) final;
+
+    JSObjectRef displayLinkFrameRates() const final;
+    void setDisplayLinkNominalFramesPerSecond(unsigned long) final;
 };
 
 } // namespace WTR

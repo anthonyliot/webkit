@@ -140,6 +140,15 @@ public:
 #if PLATFORM(MAC)
     // Whether the display link runs at the rate its observers need, rather than always at the nominal rate.
     bool platformSupportsPreferredFramesPerSecond() const;
+    // The rate DisplayLink asks the platform display link for (the nominal rate over the divisor that serves its
+    // observers), whether or not the backend honors it; 0 when it isn't running or has no observers.
+    double requestedFramesPerSecondForTesting();
+    // The rate each observer asks for (0 for no preference); full-speed clients count as one observer at the nominal rate.
+    Vector<WebCore::FramesPerSecond> observerFramesPerSecondForTesting();
+    bool isRunningForTesting() const { return platformIsRunning(); }
+    // Replaces the display's nominal rate, as if its refresh rate changed (std::nullopt restores it). Returns true if
+    // the nominal rate changed; the caller tells the pages on this display.
+    bool setNominalFramesPerSecondOverrideForTesting(std::optional<WebCore::FramesPerSecond>);
 
     // Called by DisplayLinkPlatformBackend on its display link thread.
     void platformBackendDidFire(std::optional<DisplayLinkFrameTiming> timing = std::nullopt) { notifyObserversDisplayDidRefresh(timing); }
@@ -149,6 +158,7 @@ private:
     void notifyObserversDisplayDidRefresh(std::optional<DisplayLinkFrameTiming> = std::nullopt);
 #if PLATFORM(MAC)
     void updatePlatformPreferredFramesPerSecond() WTF_REQUIRES_LOCK(m_clientsLock);
+    bool updateNominalFramesPerSecond();
 #endif
 
     void platformInitialize();
@@ -179,6 +189,7 @@ private:
     RefPtr<DisplayLinkPlatformBackend> m_platformBackend;
     // The divisor of the nominal rate last requested from the backend; 0 until the first request.
     unsigned m_platformFrameRateDivisor WTF_GUARDED_BY_LOCK(m_clientsLock) { 0 };
+    std::optional<WebCore::FramesPerSecond> m_nominalFramesPerSecondOverride;
 #endif
 #if PLATFORM(GTK) || PLATFORM(WPE)
     std::unique_ptr<DisplayVBlankMonitor> m_vblankMonitor;

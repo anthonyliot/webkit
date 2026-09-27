@@ -69,6 +69,15 @@
 
 - (BOOL)isPointInScrollbar:(NSPoint)locationInView;
 
+// The page's display link: "requestedFramesPerSecond" (the rate DisplayLink asks the platform display link for; 0 when
+// it isn't running), "nominalFramesPerSecond", "supportsPreferredFramesPerSecond" (whether the platform display link
+// runs at the requested rate), "observerFramesPerSecond" (the rate each observer asks for), and "isRunning" (whether the
+// platform display link fires). nil when the page has no display link.
+- (NSDictionary<NSString *, id> *)_displayLinkFrameRatesForTesting;
+// Makes the page's display link, and the pages on its display, use this nominal rate, as if the display's refresh rate
+// changed; 0 restores the display's rate.
+- (void)_setDisplayLinkNominalFramesPerSecondForTesting:(NSUInteger)framesPerSecond;
+
 @end
 
 #endif // !TARGET_OS_IPHONE

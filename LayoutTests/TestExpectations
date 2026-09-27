@@ -1561,6 +1561,9 @@ imported/w3c/web-platform-tests/web-share [ Skip ]
 # This test was created to test a mac-wk2 bugfix
 fast/animation/request-animation-frame-in-two-pages.html [ Skip ]
 
+# These tests read the macOS UI-process display link through uiController.displayLinkFrameRates.
+fast/display-link [ Skip ]
+
 # Only supported on iOS internal configurations, see: https://webkit.org/b/193214#c6
 pointerevents/ios [ Skip ]
 

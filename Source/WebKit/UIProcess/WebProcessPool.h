@@ -265,6 +265,7 @@ public:
     const WebCore::ScreenProperties& cachedScreenProperties();
     void displayPropertiesChanged(WebCore::PlatformDisplayID, CGDisplayChangeSummaryFlags);
     void displayLinkPropertiesChanged(WebCore::PlatformDisplayID, bool displayWasAdded);
+    void displayNominalFramesPerSecondDidChange(WebCore::PlatformDisplayID);
 #endif
 
 #if HAVE(DISPLAY_LINK)

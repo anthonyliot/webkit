@@ -188,7 +188,29 @@ bool DisplayLink::displayPropertiesChanged(bool displayWasAdded)
         return false;
 
     platformBackend->displayConfigurationChanged(displayWasAdded);
-    auto nominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
+    return updateNominalFramesPerSecond();
+#else
+    UNUSED_PARAM(displayWasAdded);
+    return false;
+#endif
+}
+
+#if PLATFORM(MAC)
+bool DisplayLink::setNominalFramesPerSecondOverrideForTesting(std::optional<FramesPerSecond> framesPerSecond)
+{
+    ASSERT(RunLoop::isMain());
+    m_nominalFramesPerSecondOverride = framesPerSecond;
+    return updateNominalFramesPerSecond();
+}
+
+bool DisplayLink::updateNominalFramesPerSecond()
+{
+    ASSERT(RunLoop::isMain());
+    RefPtr platformBackend = m_platformBackend;
+    if (!platformBackend)
+        return false;
+
+    auto nominalFramesPerSecond = m_nominalFramesPerSecondOverride.value_or(platformBackend->nominalFramesPerSecond());
 
     Locker locker { m_clientsLock };
     if (nominalFramesPerSecond == m_displayNominalFramesPerSecond)
@@ -202,11 +224,8 @@ bool DisplayLink::displayPropertiesChanged(bool displayWasAdded)
     m_platformFrameRateDivisor = 0;
     updatePlatformPreferredFramesPerSecond();
     return true;
-#else
-    UNUSED_PARAM(displayWasAdded);
-    return false;
-#endif
 }
+#endif
 
 void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLinkObserverID observerID, FramesPerSecond preferredFramesPerSecond)
 {

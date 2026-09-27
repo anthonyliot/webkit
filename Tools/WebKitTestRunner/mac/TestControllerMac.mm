@@ -44,6 +44,7 @@
 #import <WebKit/WKWebViewConfiguration.h>
 #import <WebKit/WKWebViewConfigurationPrivate.h>
 #import <WebKit/WKWebViewPrivate.h>
+#import <WebKit/WKWebViewPrivateForTesting.h>
 #import <mach-o/dyld.h>
 #import <pal/spi/mac/NSApplicationSPI.h>
 #import <wtf/darwin/DispatchExtras.h>
@@ -202,6 +203,7 @@ bool TestController::platformResetStateToConsistentValues(const TestOptions& opt
             obscuredInset.left = newObscuredInsetLeft;
             [webView _setObscuredContentInsets:obscuredInset immediate:YES];
         }
+        [webView _setDisplayLinkNominalFramesPerSecondForTesting:0];
     }
 
     if (m_defaultAppAccentColor && ![NSApp._effectiveAccentColor isEqual:m_defaultAppAccentColor.get()])

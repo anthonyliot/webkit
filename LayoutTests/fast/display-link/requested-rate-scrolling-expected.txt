@@ -1,0 +1,12 @@
+While a scroll gesture is live, the display link asks for the display's full rate; afterwards it asks for less, so a static page doesn't keep the display link at the full rate.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS While scrolling, the display link asks for the display's full rate, 240 fps.
+PASS After scrolling, the display link asks for less than the full rate.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

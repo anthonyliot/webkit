@@ -1,0 +1,20 @@
+<!DOCTYPE html><!-- webkit-test-runner [ PreferPageRenderingUpdatesNear60FPSEnabled=false ] -->
+<html>
+<body>
+<div id="box" style="width: 50px; height: 50px; background: blue;"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("A page that renders at the display's full rate makes the display link ask for the full rate: the rate follows the content, with no fixed cap.");
+jsTestIsAsync = true;
+
+startAnimationFrameLoop();
+(async () => {
+    await useNominalFramesPerSecond(240);
+    await expectRequestedFramesPerSecond("The display link asks for the display's full rate, 240 fps.", () => 240);
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

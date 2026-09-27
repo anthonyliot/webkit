@@ -443,6 +443,13 @@ interface UIScriptController {
     undefined setWebViewEditable(boolean editable);
 
     readonly attribute object fixedContainerEdgeColors;
+
+    // macOS WebKit2: { requestedFramesPerSecond, observerFramesPerSecond, nominalFramesPerSecond,
+    // supportsPreferredFramesPerSecond, isRunning } for the page's UI-process display link, or null.
+    readonly attribute object displayLinkFrameRates;
+    // macOS WebKit2: makes the page's display link use this nominal rate, as if the display's refresh rate changed;
+    // 0 restores the display's rate. Reset between tests.
+    undefined setDisplayLinkNominalFramesPerSecond(unsigned long framesPerSecond);
     undefined cancelFixedColorExtensionFadeAnimations();
 
     undefined cookiesForDomain(DOMString domain, object callback);

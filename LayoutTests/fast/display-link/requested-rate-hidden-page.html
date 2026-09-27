@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+#slider { width: 40px; height: 40px; background: green; position: relative; animation: slide 1s linear infinite alternate; }
+@keyframes slide { from { left: 0; } to { left: 200px; } }
+</style>
+</head>
+<body>
+<div id="slider"></div>
+<div id="counter" style="width: 10px; height: 10px; background: blue;"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("A hidden page that keeps changing renders at a low rate. When the platform display link runs at the requested rate (CADisplayLink), the display link asks for at most 10 fps while the page is hidden, except while a presentation update is pending.");
+jsTestIsAsync = true;
+
+// Keep changing the page (without changing its text, which the test dumps).
+const counter = document.getElementById("counter");
+let count = 0;
+setInterval(() => { counter.style.width = `${10 + (++count % 50)}px`; }, 16);
+
+const hiddenViewFramesPerSecond = 10;
+
+(async () => {
+    await useNominalFramesPerSecond(240);
+    await expectRequestedFramesPerSecond("While visible, the display link asks for the page's rendering rate, 60 fps.", () => 60);
+
+    // Hidden pages are visually idle, which halves their rendering rate to 30 fps. When the platform display link runs
+    // at the requested rate, the display link also caps them at 10 fps.
+    const hiddenRate = ({ supportsPreferredFramesPerSecond }) => supportsPreferredFramesPerSecond ? hiddenViewFramesPerSecond : 30;
+    testRunner.setPageVisibility("hidden");
+    await expectRequestedFramesPerSecond("While hidden, the display link asks for the hidden page rate.", hiddenRate);
+
+    // While a presentation update is pending, the hidden page gets its rendering rate, so the update isn't delayed.
+    const frameRatesWhilePending = await displayLinkFrameRatesWhilePresentationUpdateIsPending();
+    if (frameRatesWhilePending && frameRatesWhilePending.requestedFramesPerSecond == 30)
+        testPassed("While a presentation update is pending, the display link asks for the hidden page's rendering rate, 30 fps.");
+    else
+        testFailed(`While a presentation update is pending: ${describeFrameRates(frameRatesWhilePending)}; expected 30 fps`);
+    await expectRequestedFramesPerSecond("Once the presentation update is done, the display link asks for the hidden page rate again.", hiddenRate);
+
+    testRunner.setPageVisibility("visible");
+    await expectRequestedFramesPerSecond("When visible again, the display link asks for 60 fps.", () => 60);
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

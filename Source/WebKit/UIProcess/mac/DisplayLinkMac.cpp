@@ -278,6 +278,38 @@ bool DisplayLink::platformSupportsPreferredFramesPerSecond() const
     return platformBackend && platformBackend->supportsPreferredFramesPerSecond();
 }
 
+double DisplayLink::requestedFramesPerSecondForTesting()
+{
+    if (!platformIsRunning())
+        return 0;
+
+    Locker locker { m_clientsLock };
+    if (!m_platformFrameRateDivisor)
+        return 0;
+    // With no observers, the divisor is the last one requested; the display link stops on its own.
+    for (auto& clientInfo : m_clients.values()) {
+        if (!clientInfo.observers.isEmpty())
+            return static_cast<double>(m_displayNominalFramesPerSecond) / m_platformFrameRateDivisor;
+    }
+    return 0;
+}
+
+Vector<FramesPerSecond> DisplayLink::observerFramesPerSecondForTesting()
+{
+    Locker locker { m_clientsLock };
+    Vector<FramesPerSecond> framesPerSecond;
+    for (auto& clientInfo : m_clients.values()) {
+        if (clientInfo.observers.isEmpty())
+            continue;
+        if (clientInfo.fullSpeedUpdatesClientCount)
+            framesPerSecond.append(m_displayNominalFramesPerSecond);
+        for (auto& observer : clientInfo.observers)
+            framesPerSecond.append(observer.preferredFramesPerSecond);
+    }
+    std::ranges::sort(framesPerSecond);
+    return framesPerSecond;
+}
+
 bool DisplayLink::platformIsRunning() const
 {
     RefPtr platformBackend = m_platformBackend;

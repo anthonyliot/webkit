@@ -2634,6 +2634,31 @@ window.UIHelper = class UIHelper {
         }));
     }
 
+    // macOS WebKit2 only: { requestedFramesPerSecond, observerFramesPerSecond, nominalFramesPerSecond,
+    // supportsPreferredFramesPerSecond, isRunning } for the page's UI-process display link, or null when it has none. Doesn't wait for a presentation update, which would
+    // change the rate a hidden page's display link asks for.
+    static displayLinkFrameRates()
+    {
+        if (!this.isWebKit2() || !this.isMac())
+            return Promise.resolve(null);
+
+        // A null object reads as undefined in UI scripts.
+        const script = "uiController.uiScriptComplete(JSON.stringify(uiController.displayLinkFrameRates ?? null))";
+        return new Promise(resolve => testRunner.runUIScriptImmediately(script, frameRates => {
+            resolve(JSON.parse(frameRates));
+        }));
+    }
+
+    // macOS WebKit2 only: makes the page's display link use this nominal rate, as if the display's refresh rate changed.
+    static setDisplayLinkNominalFramesPerSecond(framesPerSecond)
+    {
+        if (!this.isWebKit2() || !this.isMac())
+            return Promise.resolve();
+
+        const script = `uiController.setDisplayLinkNominalFramesPerSecond(${framesPerSecond}); uiController.uiScriptComplete();`;
+        return new Promise(resolve => testRunner.runUIScriptImmediately(script, resolve));
+    }
+
     static async waitForFixedContainerEdgeColors(expectedColors)
     {
         while (true) {

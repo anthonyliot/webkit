@@ -28,16 +28,21 @@
 
 #if PLATFORM(MAC)
 
+#import "APIPageConfiguration.h"
 #import "AppKitSPI.h"
 #import "AudioSessionRoutingArbitratorProxy.h"
+#import "DisplayLink.h"
+#import "RemoteLayerTreeDrawingAreaProxyMac.h"
 #import "WKNSData.h"
 #import "WKWebViewMac.h"
 #import "WebColorPicker.h"
 #import "WebPageProxy.h"
+#import "WebProcessPool.h"
 #import "WebProcessProxy.h"
 #import "WebViewImpl.h"
 #import "_WKFrameHandleInternal.h"
 #import <WebCore/ColorCocoa.h>
+#import <wtf/cocoa/VectorCocoa.h>
 
 @implementation WKWebView (WKTestingMac)
 
@@ -117,6 +122,44 @@
     _page->getAccessibilityTreeData([completionHandler = makeBlockPtr(completionHandler)] (API::Data* data) {
         completionHandler(protect(wrapper(data)).get(), nil);
     });
+}
+
+- (NSDictionary<NSString *, id> *)_displayLinkFrameRatesForTesting
+{
+#if HAVE(DISPLAY_LINK)
+    RefPtr drawingArea = _page ? dynamicDowncast<WebKit::RemoteLayerTreeDrawingAreaProxyMac>(_page->drawingArea()) : nullptr;
+    auto* displayLink = drawingArea ? drawingArea->existingDisplayLink() : nullptr;
+    if (!displayLink)
+        return nil;
+
+    return @{
+        @"requestedFramesPerSecond": @(displayLink->requestedFramesPerSecondForTesting()),
+        @"nominalFramesPerSecond": @(displayLink->nominalFramesPerSecond()),
+        @"supportsPreferredFramesPerSecond": @(displayLink->platformSupportsPreferredFramesPerSecond()),
+        @"isRunning": @(displayLink->isRunningForTesting()),
+        @"observerFramesPerSecond": createNSArray(displayLink->observerFramesPerSecondForTesting(), [](auto framesPerSecond) {
+            return @(framesPerSecond);
+        }).get(),
+    };
+#else
+    return nil;
+#endif
+}
+
+- (void)_setDisplayLinkNominalFramesPerSecondForTesting:(NSUInteger)framesPerSecond
+{
+#if HAVE(DISPLAY_LINK)
+    RefPtr drawingArea = _page ? dynamicDowncast<WebKit::RemoteLayerTreeDrawingAreaProxyMac>(_page->drawingArea()) : nullptr;
+    auto* displayLink = drawingArea ? drawingArea->existingDisplayLink() : nullptr;
+    if (!displayLink)
+        return;
+
+    auto nominalFramesPerSecond = framesPerSecond ? std::optional { static_cast<WebCore::FramesPerSecond>(framesPerSecond) } : std::nullopt;
+    if (displayLink->setNominalFramesPerSecondOverrideForTesting(nominalFramesPerSecond))
+        protect(_page->configuration().processPool())->displayNominalFramesPerSecondDidChange(displayLink->displayID());
+#else
+    UNUSED_PARAM(framesPerSecond);
+#endif
 }
 
 - (BOOL)_secureEventInputEnabledForTesting

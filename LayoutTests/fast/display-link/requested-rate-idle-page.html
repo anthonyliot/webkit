@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p>A static page.</p>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("A page with nothing to render doesn't keep the display link running.");
+jsTestIsAsync = true;
+
+window.addEventListener("load", async () => {
+    await expectDisplayLinkFrameRates("The display link stops for a static page.", frameRates => frameRates && !frameRates.isRunning && !frameRates.requestedFramesPerSecond);
+    finishJSTest();
+});
+</script>
+</body>
+</html>

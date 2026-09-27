@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<body>
+<div id="box" style="width: 50px; height: 50px; background: blue;"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("When the display's refresh rate changes, the page renders at about 60 fps for the new rate, and the display link asks for the slowest rate the display offers that is at least that.");
+jsTestIsAsync = true;
+
+startAnimationFrameLoop();
+(async () => {
+    // Display rate -> the rate the display link asks for, for a page rendering with requestAnimationFrame.
+    const cases = [[240, 60], [144, 72], [165, 82.5], [120, 60], [60, 60], [240, 60]];
+    for (const [nominalFramesPerSecond, expectedFramesPerSecond] of cases) {
+        await useNominalFramesPerSecond(nominalFramesPerSecond);
+        await expectRequestedFramesPerSecond(`At ${nominalFramesPerSecond} Hz, the display link asks for ${expectedFramesPerSecond} fps.`, () => expectedFramesPerSecond);
+    }
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

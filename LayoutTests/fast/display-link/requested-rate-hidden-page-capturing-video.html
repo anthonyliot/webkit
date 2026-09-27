@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+#slider { width: 40px; height: 40px; background: green; position: relative; animation: slide 1s linear infinite alternate; }
+@keyframes slide { from { left: 0; } to { left: 200px; } }
+</style>
+</head>
+<body>
+<div id="slider"></div>
+<video id="video" autoplay playsinline muted width="160" height="120"></video>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("A hidden page that captures video isn't limited to the hidden page rate: its canvas capture and requestVideoFrameCallback run in rendering updates.");
+jsTestIsAsync = true;
+
+if (window.testRunner)
+    testRunner.setUserMediaPermission(true);
+
+(async () => {
+    const video = document.getElementById("video");
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
+    await video.play();
+    await useNominalFramesPerSecond(240);
+
+    testRunner.setPageVisibility("hidden");
+    // Hidden pages are visually idle, which halves their rendering rate to 30 fps; capturing video keeps that rate.
+    await expectRequestedFramesPerSecond("While hidden and capturing video, the display link asks for the page's rendering rate, 30 fps.", () => 30);
+
+    video.srcObject.getTracks().forEach(track => track.stop());
+    testRunner.setPageVisibility("visible");
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

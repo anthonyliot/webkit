@@ -1,0 +1,11 @@
+A page that renders at the display's full rate makes the display link ask for the full rate: the rate follows the content, with no fixed cap.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The display link asks for the display's full rate, 240 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

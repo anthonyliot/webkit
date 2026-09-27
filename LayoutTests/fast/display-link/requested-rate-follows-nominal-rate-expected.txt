@@ -1,0 +1,21 @@
+When the display's refresh rate changes, the page renders at about 60 fps for the new rate, and the display link asks for the slowest rate the display offers that is at least that.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS At 240 Hz, the display link asks for 60 fps.
+PASS The display link uses a nominal rate of 144 fps.
+PASS At 144 Hz, the display link asks for 72 fps.
+PASS The display link uses a nominal rate of 165 fps.
+PASS At 165 Hz, the display link asks for 82.5 fps.
+PASS The display link uses a nominal rate of 120 fps.
+PASS At 120 Hz, the display link asks for 60 fps.
+PASS The display link uses a nominal rate of 60 fps.
+PASS At 60 Hz, the display link asks for 60 fps.
+PASS The display link uses a nominal rate of 240 fps.
+PASS At 240 Hz, the display link asks for 60 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

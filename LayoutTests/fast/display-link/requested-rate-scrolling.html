@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { margin: 0; }
+.tall { height: 20000px; background: linear-gradient(#fff, #0a84ff); }
+</style>
+</head>
+<body>
+<div class="tall"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("While a scroll gesture is live, the display link asks for the display's full rate; afterwards it asks for less, so a static page doesn't keep the display link at the full rate.");
+jsTestIsAsync = true;
+
+window.addEventListener("load", async () => {
+    if (!window.eventSender) {
+        finishJSTest();
+        return;
+    }
+    await useNominalFramesPerSecond(240);
+    eventSender.mouseMoveTo(200, 200);
+    eventSender.mouseScrollByWithWheelAndMomentumPhases(0, -5, "began", "none");
+    const scrolling = setInterval(() => eventSender.mouseScrollByWithWheelAndMomentumPhases(0, -2, "changed", "none"), 16);
+
+    await expectRequestedFramesPerSecond("While scrolling, the display link asks for the display's full rate, 240 fps.", () => 240);
+
+    // End the gesture the way a trackpad does: lift the fingers, then a short momentum phase.
+    clearInterval(scrolling);
+    eventSender.mouseScrollByWithWheelAndMomentumPhases(0, 0, "ended", "none");
+    eventSender.mouseScrollByWithWheelAndMomentumPhases(0, -2, "none", "begin");
+    for (let i = 0; i < 5; ++i) {
+        await UIHelper.delayFor(16);
+        eventSender.mouseScrollByWithWheelAndMomentumPhases(0, -1, "none", "continue");
+    }
+    eventSender.mouseScrollByWithWheelAndMomentumPhases(0, 0, "none", "end");
+    // With a display link that always runs at the full rate (CVDisplayLink), the scrolling thread's observer asks for
+    // the full rate until it's removed, when the wheel event activity ends.
+    await expectDisplayLinkFrameRates("After scrolling, the display link asks for less than the full rate.", frameRates => frameRates && frameRates.requestedFramesPerSecond < frameRates.nominalFramesPerSecond, 10000);
+    finishJSTest();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+A hidden page that captures video isn't limited to the hidden page rate: its canvas capture and requestVideoFrameCallback run in rendering updates.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS While hidden and capturing video, the display link asks for the page's rendering rate, 30 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

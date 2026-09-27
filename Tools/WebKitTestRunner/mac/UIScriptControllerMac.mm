@@ -116,6 +116,21 @@ void UIScriptControllerMac::simulateAccessibilitySettingsChangeNotification(JSVa
     }).get()];
 }
 
+JSObjectRef UIScriptControllerMac::displayLinkFrameRates() const
+{
+    NSDictionary *frameRates = webView()._displayLinkFrameRatesForTesting;
+    if (!frameRates)
+        return nullptr;
+
+    RetainPtr jsValue = [JSValue valueWithObject:frameRates inContext:[JSContext contextWithJSGlobalContextRef:m_context->jsContext()]];
+    return JSValueToObject(m_context->jsContext(), [jsValue JSValueRef], nullptr);
+}
+
+void UIScriptControllerMac::setDisplayLinkNominalFramesPerSecond(unsigned long framesPerSecond)
+{
+    [webView() _setDisplayLinkNominalFramesPerSecondForTesting:framesPerSecond];
+}
+
 bool UIScriptControllerMac::isShowingDateTimePicker() const
 {
     for (NSWindow *childWindow in webView().window.childWindows) {

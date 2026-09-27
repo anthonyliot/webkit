@@ -165,6 +165,8 @@ fast/events/inactive-window-no-mouse-event.html [ Pass ]
 
 fast/animation/request-animation-frame-in-two-pages.html [ Pass ]
 
+fast/display-link [ Pass ]
+
 fast/forms/file/entries-api/image-transcode-open-panel.html [ Pass ]
 fast/forms/file/entries-api/pages-jpeg-open-panel.html [ Pass ]
 fast/forms/file/entries-api/pdf-jpeg-open-panel.html [ Pass ]

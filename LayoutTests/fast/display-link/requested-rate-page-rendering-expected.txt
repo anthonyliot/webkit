@@ -1,0 +1,11 @@
+A page rendering with requestAnimationFrame makes the display link ask for the page's rendering rate (about 60 fps), not the display's full rate.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The display link asks for 60 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+
