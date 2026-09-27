@@ -685,6 +685,9 @@ public:
     };
     static constexpr OptionSet<PreferredRenderingUpdateOption> allPreferredRenderingUpdateOptions = { PreferredRenderingUpdateOption::IncludeThrottlingReasons, PreferredRenderingUpdateOption::IncludeAnimationsFrameRate };
     WEBCORE_EXPORT std::optional<FramesPerSecond> preferredRenderingUpdateFramesPerSecond(OptionSet<PreferredRenderingUpdateOption> = allPreferredRenderingUpdateOptions) const;
+    // The rate accelerated animations should run at: the rendering rate, except that being visually idle or having a
+    // canvas that paces rendering updates doesn't lower it.
+    WEBCORE_EXPORT std::optional<FramesPerSecond> preferredAnimationFramesPerSecond() const;
     WEBCORE_EXPORT Seconds preferredRenderingUpdateInterval() const;
 
     void addGPUCanvasRequestingRenderingUpdatePacing(CanvasRenderingContext&);

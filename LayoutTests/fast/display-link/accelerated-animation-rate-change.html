@@ -1,0 +1,38 @@
+<!DOCTYPE html><!-- webkit-test-runner [ ThreadedTimeBasedAnimationsEnabled=false ] -->
+<html>
+<head>
+<style>
+.box { width: 40px; height: 40px; background: purple; margin: 20px; }
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="spinner" class="box"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("A running accelerated animation follows the page's animation rate when it changes: its Core Animation animation asks for 30 fps in low power mode, then 60 fps again, and keeps its timing.");
+jsTestIsAsync = true;
+
+(async () => {
+    await useNominalFramesPerSecond(240);
+    const spinner = document.getElementById("spinner");
+    spinner.classList.add("spinning");
+    const beginTimes = await expectAnimationFramesPerSecond("The running animation asks for 60 fps.", spinner, 60);
+
+    internals.setLowPowerModeEnabled(true);
+    const lowPowerBeginTimes = await expectAnimationFramesPerSecond("In low power mode, the running animation asks for 30 fps.", spinner, 30);
+    if (beginTimes.length && beginTimes.every(time => time > 0) && JSON.stringify(beginTimes) == JSON.stringify(lowPowerBeginTimes))
+        testPassed("The animation kept its begin time.");
+    else
+        testFailed(`The animation's begin times changed from [${beginTimes}] to [${lowPowerBeginTimes}]`);
+
+    internals.setLowPowerModeEnabled(false);
+    await expectAnimationFramesPerSecond("Out of low power mode, the running animation asks for 60 fps again.", spinner, 60);
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

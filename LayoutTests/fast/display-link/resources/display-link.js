@@ -79,29 +79,34 @@ function displayLinkFrameRatesWhilePresentationUpdateIsPending()
 
 // Makes the display link behave as if the display ran at this rate, so that the page's rendering rate (about 60 fps),
 // its throttled rate (30 fps), the hidden page rate (10 fps) and the display's full rate all differ, whatever the
-// actual display. Reset between tests.
-async function useNominalFramesPerSecond(framesPerSecond)
+// actual display, and sets low power mode (off by default). Reset between tests.
+async function useNominalFramesPerSecond(framesPerSecond, { lowPowerMode = false } = { })
 {
+    // Don't depend on the machine's low power mode.
+    window.internals?.setLowPowerModeEnabled(lowPowerMode);
     await UIHelper.renderingUpdate();
     await UIHelper.setDisplayLinkNominalFramesPerSecond(framesPerSecond);
     await expectDisplayLinkFrameRates(`The display link uses a nominal rate of ${framesPerSecond} fps.`, frameRates => frameRates && frameRates.nominalFramesPerSecond == framesPerSecond);
 }
 
 // Waits until every Core Animation animation of the element's layer in the UI process asks for expectedFramesPerSecond.
+// Returns the begin times of the layer's animations.
 async function expectAnimationFramesPerSecond(message, element, expectedFramesPerSecond, timeout = 5000)
 {
     const start = performance.now();
+    let properties = null;
     let framesPerSecond = [];
     while (performance.now() - start < timeout) {
-        const properties = await UIHelper.propertiesOfLayerWithID(internals.layerIDForElement(element));
+        properties = await UIHelper.propertiesOfLayerWithID(internals.layerIDForElement(element));
         framesPerSecond = properties?.animationPreferredFramesPerSecond ?? [];
         if (framesPerSecond.length && framesPerSecond.every(value => value == expectedFramesPerSecond)) {
             testPassed(message);
-            return;
+            return properties.animationBeginTimes;
         }
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     testFailed(`${message}: the layer's animations ask for [${framesPerSecond}] fps; expected ${expectedFramesPerSecond} fps`);
+    return properties?.animationBeginTimes ?? [];
 }
 
 function startAnimationFrameLoop()

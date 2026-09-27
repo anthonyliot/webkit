@@ -198,6 +198,9 @@ private:
 
     WebCore::Timer m_scheduleRenderingTimer;
     std::optional<WebCore::FramesPerSecond> m_preferredFramesPerSecond;
+#if PLATFORM(MAC)
+    std::optional<WebCore::FramesPerSecond> m_preferredAnimationFramesPerSecond { WebCore::FullSpeedFramesPerSecond };
+#endif
     Seconds m_preferredRenderingUpdateInterval;
     bool m_isScheduled { false };
 };

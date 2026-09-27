@@ -32,7 +32,9 @@
 #import "DrawingArea.h"
 #import "DrawingAreaMessages.h"
 #import "MessageSenderInlines.h"
+#import "PlatformCAAnimationRemote.h"
 #import "RemoteLayerTreeCommitBundle.h"
+#import "RemoteLayerTreeHost.h"
 #import "RemoteLayerTreeScrollingPerformanceData.h"
 #import "RemoteScrollingCoordinatorProxyMac.h"
 #import "TransientZoomState.h"
@@ -563,9 +565,31 @@ void RemoteLayerTreeDrawingAreaProxyMac::setPreferredFramesPerSecond(IPC::Connec
     }
 
     updateDisplayRefreshObserverFramesPerSecond();
-    // Threaded animations run at the page's rate too.
+}
+
+void RemoteLayerTreeDrawingAreaProxyMac::setPreferredFramesPerSecondForAnimations(IPC::Connection& connection, WebCore::FramesPerSecond preferredFramesPerSecond)
+{
+    if (!webProcessProxy().hasConnection() || &webProcessProxy().connection() != &connection)
+        return;
+    if (m_animationFramesPerSecond == preferredFramesPerSecond)
+        return;
+
+    m_animationFramesPerSecond = preferredFramesPerSecond;
     if (RefPtr page = this->page())
         protect(page->scrollingCoordinatorProxy())->animationFrameRateDidChange();
+    updateRunningAnimationFrameRates();
+}
+
+void RemoteLayerTreeDrawingAreaProxyMac::updateRunningAnimationFrameRates()
+{
+    if (!m_remoteLayerTreeHost)
+        return;
+
+    auto& layerTreeHost = *m_remoteLayerTreeHost;
+    for (auto layerID : copyToVector(layerTreeHost.animationDelegates().keys())) {
+        if (RetainPtr layer = layerTreeHost.layerForID(layerID))
+            PlatformCAAnimationRemote::updateLayerAnimationFrameRates(layer.get(), layerTreeHost);
+    }
 }
 
 // Hidden and occluded views don't need to update often, unless something waits for their next presentation update,
@@ -623,6 +647,7 @@ void RemoteLayerTreeDrawingAreaProxyMac::windowScreenDidChange(PlatformDisplayID
 
     m_displayID = displayID;
     m_displayNominalFramesPerSecond = displayNominalFramesPerSecond();
+    updateRunningAnimationFrameRates();
 
     if (page)
         protect(page->scrollingCoordinatorProxy())->windowScreenDidChange(displayID, m_displayNominalFramesPerSecond);
@@ -642,6 +667,7 @@ void RemoteLayerTreeDrawingAreaProxyMac::displayNominalFramesPerSecondDidChange(
         return;
 
     m_displayNominalFramesPerSecond = displayNominalFramesPerSecond();
+    updateRunningAnimationFrameRates();
     if (RefPtr page = this->page())
         protect(page->scrollingCoordinatorProxy())->windowScreenDidChange(*m_displayID, m_displayNominalFramesPerSecond);
 
@@ -649,8 +675,9 @@ void RemoteLayerTreeDrawingAreaProxyMac::displayNominalFramesPerSecondDidChange(
         displayLink->setObserverPreferredFramesPerSecond(m_displayLinkClient, *m_fullSpeedUpdateObserverID, displayLink->nominalFramesPerSecond());
 }
 
-// Accelerated animations run at the page's rendering rate, as the display link does for the page (about 60 fps, 30 in
-// low power mode, the display's full rate when the content asks for it). The WebKitDebugAnimationFrameRatePolicy default
+// Accelerated animations run at the page's animation rate (Page::preferredAnimationFramesPerSecond(): the rendering
+// rate, except when the page is visually idle or a canvas paces its rendering; about 60 fps, 30 in low power mode, the
+// display's full rate when the content asks for it), divided like the display link does. The WebKitDebugAnimationFrameRatePolicy default
 // selects another policy, to compare:
 // - high: every animation asks Core Animation for a high frame rate (80 to 120 fps), and threaded animations for the
 //   display's full rate.
@@ -681,7 +708,7 @@ std::optional<WebCore::FramesPerSecond> RemoteLayerTreeDrawingAreaProxyMac::pref
         return nominalFramesPerSecond;
 
     // The rate the display link runs at for the page, so that animations and rendering updates stay in step.
-    std::array<WebCore::FramesPerSecond, 1> demand { std::min(m_clientPreferredFramesPerSecond, nominalFramesPerSecond) };
+    std::array<WebCore::FramesPerSecond, 1> demand { std::min(m_animationFramesPerSecond, nominalFramesPerSecond) };
     return nominalFramesPerSecond / WebCore::displayLinkFrameRateDivisor(nominalFramesPerSecond, demand);
 }
 

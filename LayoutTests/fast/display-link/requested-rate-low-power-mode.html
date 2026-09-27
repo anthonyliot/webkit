@@ -9,11 +9,9 @@
 description("In low power mode, a requestAnimationFrame page renders at half its rate, and the display link asks for that rate.");
 jsTestIsAsync = true;
 
-if (window.internals)
-    internals.setLowPowerModeEnabled(true);
 startAnimationFrameLoop();
 (async () => {
-    await useNominalFramesPerSecond(240);
+    await useNominalFramesPerSecond(240, { lowPowerMode: true });
     await expectRequestedFramesPerSecond("The display link asks for 30 fps.", () => 30);
     finishJSTest();
 })();

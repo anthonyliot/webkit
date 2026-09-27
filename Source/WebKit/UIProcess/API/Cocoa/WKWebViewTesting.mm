@@ -1233,12 +1233,18 @@ static void dumpCALayer(TextStream& ts, CALayer *layer, bool traverse)
         @"rasterizationScale" : @(layer.get().rasterizationScale),
         @"opaque" : @(layer.get().opaque),
         @"opacity" : @(layer.get().opacity),
-#if HAVE(CORE_ANIMATION_FRAME_RATE_RANGE)
+#if HAVE(CORE_ANIMATION_FRAME_RATE_RANGE) && PLATFORM(MAC)
         @"animationPreferredFramesPerSecond" : [&] {
             RetainPtr framesPerSecond = adoptNS([[NSMutableArray alloc] init]);
             for (NSString *key in layer.get().animationKeys)
                 [framesPerSecond addObject:@([layer animationForKey:key].preferredFrameRateRange.preferred)];
             return framesPerSecond;
+        }().get(),
+        @"animationBeginTimes" : [&] {
+            RetainPtr beginTimes = adoptNS([[NSMutableArray alloc] init]);
+            for (NSString *key in layer.get().animationKeys)
+                [beginTimes addObject:@([layer animationForKey:key].beginTime)];
+            return beginTimes;
         }().get(),
 #endif
     };

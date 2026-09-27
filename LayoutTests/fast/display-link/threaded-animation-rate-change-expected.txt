@@ -1,0 +1,13 @@
+Threaded animations follow the page's animation rate when it changes: in low power mode, the scrolling thread asks the display link for 30 fps for them, then 60 fps again.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The page and its threaded animation ask for 60 fps.
+PASS In low power mode, both ask for 30 fps.
+PASS Out of low power mode, both ask for 60 fps again.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

@@ -1,0 +1,14 @@
+A running accelerated animation follows the page's animation rate when it changes: its Core Animation animation asks for 30 fps in low power mode, then 60 fps again, and keeps its timing.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The running animation asks for 60 fps.
+PASS In low power mode, the running animation asks for 30 fps.
+PASS The animation kept its begin time.
+PASS Out of low power mode, the running animation asks for 60 fps again.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

@@ -131,6 +131,9 @@ public:
 
     typedef Vector<std::pair<String, Properties>> AnimationsList;
     static void updateLayerAnimations(CALayer *, RemoteLayerTreeHost*, const AnimationsList& animationsToAdd, const HashSet<String>& animationsToRemove);
+    // Gives the layer's running animations the frame rate the page's animations should run at now
+    // (RemoteLayerTreeDrawingAreaProxy::preferredFramesPerSecondForAnimations()).
+    static void updateLayerAnimationFrameRates(CALayer *, RemoteLayerTreeHost&);
 
 private:
     PlatformCAAnimationRemote(AnimationType, const String& keyPath);

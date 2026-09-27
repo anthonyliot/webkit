@@ -87,6 +87,8 @@ private:
     void scheduleDisplayRefreshCallbacks() override;
     void pauseDisplayRefreshCallbacks() override;
     void setPreferredFramesPerSecond(IPC::Connection&, WebCore::FramesPerSecond) override;
+    void setPreferredFramesPerSecondForAnimations(IPC::Connection&, WebCore::FramesPerSecond) override;
+    void updateRunningAnimationFrameRates();
     void windowScreenDidChange(WebCore::PlatformDisplayID) override;
     void displayNominalFramesPerSecondDidChange() override;
     std::optional<WebCore::FramesPerSecond> displayNominalFramesPerSecond() override;
@@ -112,6 +114,8 @@ private:
     std::optional<WebCore::PlatformDisplayID> m_displayID; // Would be nice to make this non-optional, and ensure we always get one on creation.
     std::optional<WebCore::FramesPerSecond> m_displayNominalFramesPerSecond;
     WebCore::FramesPerSecond m_clientPreferredFramesPerSecond { WebCore::FullSpeedFramesPerSecond };
+    // The rate the page's accelerated animations should run at (Page::preferredAnimationFramesPerSecond()).
+    WebCore::FramesPerSecond m_animationFramesPerSecond { WebCore::FullSpeedFramesPerSecond };
 
     std::optional<DisplayLinkObserverID> m_displayRefreshObserverID;
     std::optional<DisplayLinkObserverID> m_fullSpeedUpdateObserverID;

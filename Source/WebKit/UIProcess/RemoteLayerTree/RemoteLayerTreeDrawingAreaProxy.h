@@ -222,6 +222,7 @@ private:
     // properly track all the requested and filter displayDidRefresh callback rates
     // per-frame.
     virtual void setPreferredFramesPerSecond(IPC::Connection&, WebCore::FramesPerSecond) { }
+    virtual void setPreferredFramesPerSecondForAnimations(IPC::Connection&, WebCore::FramesPerSecond) { }
 
     void notifyPendingCommitLayerTree(IPC::Connection&, std::optional<TransactionID>);
     void notifyFlushingLayerTree(IPC::Connection&, TransactionID);

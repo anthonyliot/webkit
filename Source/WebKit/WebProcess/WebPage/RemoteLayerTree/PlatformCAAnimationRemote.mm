@@ -40,6 +40,7 @@
 #import <pal/spi/cocoa/QuartzCoreSPI.h>
 #import <wtf/BlockObjCExceptions.h>
 #import <wtf/RetainPtr.h>
+#import <wtf/cocoa/TypeCastsCocoa.h>
 #import <wtf/cocoa/VectorCocoa.h>
 #import <wtf/text/TextStream.h>
 
@@ -503,6 +504,53 @@ static bool animatesTransform(const PlatformCAAnimationRemote::Properties& prope
         return animatesTransform(animationProperties);
     });
 }
+
+static bool animatesTransform(CAAnimation *animation)
+{
+    if (RetainPtr propertyAnimation = dynamic_objc_cast<CAPropertyAnimation>(animation); propertyAnimation && [propertyAnimation.get().keyPath hasPrefix:@"transform"])
+        return true;
+    if (RetainPtr group = dynamic_objc_cast<CAAnimationGroup>(animation)) {
+        for (CAAnimation *child in group.get().animations) {
+            if (animatesTransform(child))
+                return true;
+        }
+    }
+    return false;
+}
+
+static void setFrameRate(CAAnimation *animation, std::optional<WebCore::FramesPerSecond> framesPerSecond)
+{
+    if (framesPerSecond) {
+        float preferredFramesPerSecond = *framesPerSecond;
+        [animation setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond, preferredFramesPerSecond, preferredFramesPerSecond)];
+        return;
+    }
+    // Opt into a higher frame-rate for displays that support higher refresh rates.
+    [animation setPreferredFrameRateRange:WebKit::highFrameRateRange()];
+    [animation setHighFrameRateReason:WebKit::webAnimationHighFrameRateReason];
+}
+
+static bool hasFrameRate(CAAnimation *animation, std::optional<WebCore::FramesPerSecond> framesPerSecond)
+{
+    if (framesPerSecond)
+        return animation.preferredFrameRateRange.preferred == *framesPerSecond;
+    return CAFrameRateRangeIsEqualToRange(animation.preferredFrameRateRange, WebKit::highFrameRateRange());
+}
+
+// A copy of the animation (and, for a group, of its animations) with the frame rate the page's animations should run
+// at now. Core Animation animations can't be changed once they're added to a layer.
+static RetainPtr<CAAnimation> copyWithCurrentFrameRate(CAAnimation *animation, RemoteLayerTreeDrawingAreaProxy& drawingArea)
+{
+    RetainPtr copy = adoptNS([animation mutableCopy]);
+    if (RetainPtr group = dynamic_objc_cast<CAAnimationGroup>(copy.get())) {
+        RetainPtr animations = adoptNS([[NSMutableArray alloc] init]);
+        for (CAAnimation *child in group.get().animations)
+            [animations addObject:copyWithCurrentFrameRate(child, drawingArea).get()];
+        [group setAnimations:animations.get()];
+    }
+    setFrameRate(copy.get(), drawingArea.preferredFramesPerSecondForAnimations(animatesTransform(copy.get())));
+    return copy;
+}
 #endif
 
 static RetainPtr<CAAnimation> createAnimation(CALayer *layer, RemoteLayerTreeHost* layerTreeHost, const PlatformCAAnimationRemote::Properties& properties)
@@ -622,14 +670,7 @@ static RetainPtr<CAAnimation> createAnimation(CALayer *layer, RemoteLayerTreeHos
     std::optional<WebCore::FramesPerSecond> framesPerSecond;
     if (layerTreeHost)
         framesPerSecond = protect(layerTreeHost->drawingArea())->preferredFramesPerSecondForAnimations(animatesTransform(properties));
-    if (framesPerSecond) {
-        float preferredFramesPerSecond = *framesPerSecond;
-        [caAnimation setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond, preferredFramesPerSecond, preferredFramesPerSecond)];
-    } else {
-        // Opt into a higher frame-rate for displays that support higher refresh rates.
-        [caAnimation setPreferredFrameRateRange:WebKit::highFrameRateRange()];
-        [caAnimation setHighFrameRateReason:WebKit::webAnimationHighFrameRateReason];
-    }
+    setFrameRate(caAnimation.get(), framesPerSecond);
 #endif // HAVE(CORE_ANIMATION_FRAME_RATE_RANGE)
 
     return caAnimation;
@@ -644,6 +685,29 @@ static void addAnimationToLayer(CALayer *layer, RemoteLayerTreeHost* layerTreeHo
 
     [layer addAnimation:createAnimation(layer, layerTreeHost, properties).get() forKey:key.createNSString().get()];
     [layer setInheritsTiming:NO];
+}
+
+void PlatformCAAnimationRemote::updateLayerAnimationFrameRates(CALayer *layer, RemoteLayerTreeHost& layerTreeHost)
+{
+#if HAVE(CORE_ANIMATION_FRAME_RATE_RANGE)
+    Ref drawingArea = layerTreeHost.drawingArea();
+
+    BEGIN_BLOCK_OBJC_EXCEPTIONS
+
+    for (NSString *key in RetainPtr { layer.animationKeys }.get()) {
+        RetainPtr animation = [layer animationForKey:key];
+        if (!animation || hasFrameRate(animation.get(), drawingArea->preferredFramesPerSecondForAnimations(animatesTransform(animation.get()))))
+            continue;
+        // The copy keeps the animation's timing. Its delegate reports that it started again, which only matters for
+        // animations whose start time isn't known yet; the replaced animation's end isn't reported.
+        [layer addAnimation:copyWithCurrentFrameRate(animation.get(), drawingArea.get()).get() forKey:key];
+    }
+
+    END_BLOCK_OBJC_EXCEPTIONS
+#else
+    UNUSED_PARAM(layer);
+    UNUSED_PARAM(layerTreeHost);
+#endif
 }
 
 void PlatformCAAnimationRemote::updateLayerAnimations(CALayer *layer, RemoteLayerTreeHost* layerTreeHost, const AnimationsList& animationsToAdd, const HashSet<String>& animationsToRemove)

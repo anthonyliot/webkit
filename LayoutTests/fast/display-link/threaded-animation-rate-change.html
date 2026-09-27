@@ -1,0 +1,38 @@
+<!DOCTYPE html><!-- webkit-test-runner [ ThreadedTimeBasedAnimationsEnabled=true ] -->
+<html>
+<head>
+<style>
+.box { width: 40px; height: 40px; background: purple; margin: 20px; }
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="box" class="box"></div>
+<div id="spinner" class="box"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("Threaded animations follow the page's animation rate when it changes: in low power mode, the scrolling thread asks the display link for 30 fps for them, then 60 fps again.");
+jsTestIsAsync = true;
+
+const expectObservers = (message, expected) => expectDisplayLinkFrameRates(message, frameRates => frameRates && JSON.stringify(frameRates.observerFramesPerSecond) == expected);
+
+// The page keeps rendering with requestAnimationFrame; the scrolling thread runs the threaded animation with a second observer.
+startAnimationFrameLoop();
+(async () => {
+    await useNominalFramesPerSecond(240);
+    document.getElementById("spinner").classList.add("spinning");
+    await expectObservers("The page and its threaded animation ask for 60 fps.", "[60,60]");
+
+    internals.setLowPowerModeEnabled(true);
+    await expectObservers("In low power mode, both ask for 30 fps.", "[30,30]");
+
+    internals.setLowPowerModeEnabled(false);
+    await expectObservers("Out of low power mode, both ask for 60 fps again.", "[60,60]");
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

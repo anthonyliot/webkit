@@ -615,6 +615,14 @@ void RemoteLayerTreeDrawingArea::renderingUpdateFramesPerSecondChanged()
 
     m_preferredFramesPerSecond = preferredFramesPerSecond;
     m_preferredRenderingUpdateInterval = page->preferredRenderingUpdateInterval();
+
+#if PLATFORM(MAC)
+    // Accelerated animations run in the UI process.
+    auto preferredAnimationFramesPerSecond = page->preferredAnimationFramesPerSecond();
+    if (preferredAnimationFramesPerSecond && preferredAnimationFramesPerSecond != m_preferredAnimationFramesPerSecond)
+        send(Messages::RemoteLayerTreeDrawingAreaProxy::SetPreferredFramesPerSecondForAnimations(*preferredAnimationFramesPerSecond));
+    m_preferredAnimationFramesPerSecond = preferredAnimationFramesPerSecond;
+#endif
 }
 
 } // namespace WebKit

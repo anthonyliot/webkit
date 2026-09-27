@@ -2954,6 +2954,29 @@ std::optional<FramesPerSecond> Page::preferredRenderingUpdateFramesPerSecond(Opt
     return frameRate;
 }
 
+std::optional<FramesPerSecond> Page::preferredAnimationFramesPerSecond() const
+{
+    // The page's window can be visible while it's visually idle, and a canvas pacing its rendering updates doesn't
+    // make the page's animations slower; so only the other throttling reasons lower the rate of animations.
+    auto throttlingReasons = m_throttlingReasons - ThrottlingReason::VisuallyIdle;
+    auto frameRate = preferredFramesPerSecond(throttlingReasons, m_displayNominalFramesPerSecond, settings().preferPageRenderingUpdatesNear60FPSEnabled());
+
+    auto unthrottledDefaultFrameRate = preferredRenderingUpdateFramesPerSecond({ });
+    if (frameRate && unthrottledDefaultFrameRate && *frameRate < *unthrottledDefaultFrameRate)
+        return frameRate;
+
+    forEachDocument([&] (Document& document) {
+        if (CheckedPtr timelinesController = document.timelinesController()) {
+            if (auto timelinePreferredFrameRate = timelinesController->maximumAnimationFrameRate()) {
+                if (!frameRate || *frameRate < *timelinePreferredFrameRate)
+                    frameRate = *timelinePreferredFrameRate;
+            }
+        }
+    });
+
+    return frameRate;
+}
+
 Seconds Page::preferredRenderingUpdateInterval() const
 {
     return preferredFrameInterval(m_throttlingReasons, m_displayNominalFramesPerSecond, settings().preferPageRenderingUpdatesNear60FPSEnabled());

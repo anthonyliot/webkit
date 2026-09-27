@@ -19,10 +19,8 @@
 description("In low power mode, accelerated animations run at the throttled rendering rate: their Core Animation animations ask for 30 fps.");
 jsTestIsAsync = true;
 
-if (window.internals)
-    internals.setLowPowerModeEnabled(true);
 (async () => {
-    await useNominalFramesPerSecond(240);
+    await useNominalFramesPerSecond(240, { lowPowerMode: true });
     // Start the animations now: an animation keeps the frame rate it was created with.
     document.getElementById("spinner").classList.add("spinning");
     document.getElementById("fader").classList.add("fading");
