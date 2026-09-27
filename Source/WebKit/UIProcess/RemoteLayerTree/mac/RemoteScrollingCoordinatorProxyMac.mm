@@ -243,6 +243,11 @@ void RemoteScrollingCoordinatorProxyMac::windowScreenDidChange(PlatformDisplayID
     m_eventDispatcher->windowScreenDidChange(displayID, nominalFramesPerSecond);
 }
 
+void RemoteScrollingCoordinatorProxyMac::animationFrameRateDidChange()
+{
+    m_eventDispatcher->animationFrameRateDidChange();
+}
+
 void RemoteScrollingCoordinatorProxyMac::windowScreenWillChange()
 {
     m_eventDispatcher->windowScreenWillChange();

@@ -1,0 +1,34 @@
+<!DOCTYPE html><!-- webkit-test-runner [ ThreadedTimeBasedAnimationsEnabled=false PreferPageRenderingUpdatesNear60FPSEnabled=false ] -->
+<html>
+<head>
+<style>
+.box { width: 40px; height: 40px; background: purple; margin: 20px; }
+.spinning { animation: spin 1s linear infinite; }
+.fading { animation: fade 1s linear infinite alternate; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes fade { from { opacity: 1; } to { opacity: 0.2; } }
+</style>
+</head>
+<body>
+<div id="spinner" class="box"></div>
+<div id="fader" class="box"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("When the page renders at the display's full rate, its accelerated animations do too: their Core Animation animations ask for 240 fps on a 240 Hz display.");
+jsTestIsAsync = true;
+
+
+(async () => {
+    await useNominalFramesPerSecond(240);
+    // Start the animations now: an animation keeps the frame rate it was created with.
+    document.getElementById("spinner").classList.add("spinning");
+    document.getElementById("fader").classList.add("fading");
+    await expectAnimationFramesPerSecond("The transform animation asks for 240 fps.", document.getElementById("spinner"), 240);
+    await expectAnimationFramesPerSecond("The opacity animation asks for 240 fps.", document.getElementById("fader"), 240);
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

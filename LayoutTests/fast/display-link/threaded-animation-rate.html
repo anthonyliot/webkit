@@ -1,0 +1,37 @@
+<!DOCTYPE html><!-- webkit-test-runner [ ThreadedTimeBasedAnimationsEnabled=true ] -->
+<html>
+<head>
+<style>
+.box { width: 40px; height: 40px; background: purple; margin: 20px; }
+.spinning { animation: spin 1s linear infinite; }
+.fading { animation: fade 1s linear infinite alternate; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes fade { from { opacity: 1; } to { opacity: 0.2; } }
+</style>
+</head>
+<body>
+<div id="box" class="box"></div>
+<div id="spinner" class="box"></div>
+<div id="fader" class="box"></div>
+<script src="../../resources/js-test.js"></script>
+<script src="../../resources/ui-helper.js"></script>
+<script src="resources/display-link.js"></script>
+<script>
+description("Threaded animations run at the page's rendering rate: on a 240 Hz display, the scrolling thread asks the display link for 60 fps for them, not the full rate.");
+jsTestIsAsync = true;
+
+
+startAnimationFrameLoop();
+(async () => {
+    await useNominalFramesPerSecond(240);
+    // Start the animations now: an animation keeps the frame rate it was created with.
+    document.getElementById("spinner").classList.add("spinning");
+    document.getElementById("fader").classList.add("fading");
+    // The page keeps rendering at 60 fps with requestAnimationFrame; the scrolling thread runs the threaded animations
+    // with a second observer, which asks for the same rate rather than 240 fps.
+    await expectDisplayLinkFrameRates("The page and its threaded animations both ask for 60 fps.", frameRates => frameRates && JSON.stringify(frameRates.observerFramesPerSecond) == "[60,60]");
+    finishJSTest();
+})();
+</script>
+</body>
+</html>

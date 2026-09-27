@@ -28,9 +28,11 @@
 
 #import "ArgumentCoders.h"
 #import "CAFrameRateRangeUtilities.h"
+#import "RemoteLayerTreeDrawingAreaProxy.h"
 #import "RemoteLayerTreeHost.h"
 #import "WKAnimationDelegate.h"
 #import <QuartzCore/QuartzCore.h>
+#import <WebCore/AnimationFrameRate.h>
 #import <WebCore/GraphicsLayer.h>
 #import <WebCore/PlatformCAAnimationCocoa.h>
 #import <WebCore/PlatformCAFilters.h>
@@ -493,6 +495,16 @@ static RetainPtr<NSObject> animationValueFromKeyframeValue(const PlatformCAAnima
     );
 }
 
+#if HAVE(CORE_ANIMATION_FRAME_RATE_RANGE)
+// Whether the animation (or, for a group, one of its animations) moves or transforms its layer.
+static bool animatesTransform(const PlatformCAAnimationRemote::Properties& properties)
+{
+    return properties.keyPath.startsWith("transform"_s) || std::ranges::any_of(properties.animations, [](auto& animationProperties) {
+        return animatesTransform(animationProperties);
+    });
+}
+#endif
+
 static RetainPtr<CAAnimation> createAnimation(CALayer *layer, RemoteLayerTreeHost* layerTreeHost, const PlatformCAAnimationRemote::Properties& properties)
 {
     RetainPtr<CAAnimation> caAnimation;
@@ -607,9 +619,17 @@ static RetainPtr<CAAnimation> createAnimation(CALayer *layer, RemoteLayerTreeHos
     }
 
 #if HAVE(CORE_ANIMATION_FRAME_RATE_RANGE)
-    // Opt into a higher frame-rate for displays that support higher refresh rates.
-    [caAnimation setPreferredFrameRateRange:WebKit::highFrameRateRange()];
-    [caAnimation setHighFrameRateReason:WebKit::webAnimationHighFrameRateReason];
+    std::optional<WebCore::FramesPerSecond> framesPerSecond;
+    if (layerTreeHost)
+        framesPerSecond = protect(layerTreeHost->drawingArea())->preferredFramesPerSecondForAnimations(animatesTransform(properties));
+    if (framesPerSecond) {
+        float preferredFramesPerSecond = *framesPerSecond;
+        [caAnimation setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond, preferredFramesPerSecond, preferredFramesPerSecond)];
+    } else {
+        // Opt into a higher frame-rate for displays that support higher refresh rates.
+        [caAnimation setPreferredFrameRateRange:WebKit::highFrameRateRange()];
+        [caAnimation setHighFrameRateReason:WebKit::webAnimationHighFrameRateReason];
+    }
 #endif // HAVE(CORE_ANIMATION_FRAME_RATE_RANGE)
 
     return caAnimation;

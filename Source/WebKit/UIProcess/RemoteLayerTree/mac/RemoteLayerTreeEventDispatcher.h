@@ -98,6 +98,9 @@ public:
 
     void setScrollingTree(RefPtr<RemoteScrollingTree>&&);
 
+    // The rate the page's animations should run at changed (see RemoteLayerTreeDrawingAreaProxyMac::preferredFramesPerSecondForAnimations()).
+    void animationFrameRateDidChange() { updateDisplayLinkObserverFramesPerSecond(); }
+
     void didRefreshDisplay(WebCore::PlatformDisplayID);
     void mainThreadDisplayDidRefresh(WebCore::PlatformDisplayID);
 
@@ -223,6 +226,8 @@ private:
     friend class RemoteScrollingCoordinatorProxyMac;
     Lock m_animationLock;
     HashMap<WebCore::PlatformLayerIdentifier, Ref<RemoteAnimationStack>> m_animationStacks WTF_GUARDED_BY_LOCK(m_animationLock);
+    // The layers whose animations move or transform them (RemoteLayerTreeNode::hasHighImpactMonotonicAnimations()).
+    HashSet<WebCore::PlatformLayerIdentifier> m_highImpactAnimationLayers WTF_GUARDED_BY_LOCK(m_animationLock);
     std::unique_ptr<RemoteMonotonicTimelineRegistry> m_monotonicTimelineRegistry WTF_GUARDED_BY_LOCK(m_animationLock);
 #endif
 

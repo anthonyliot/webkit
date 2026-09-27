@@ -40,6 +40,7 @@
 #import "WebProcessPool.h"
 #import "WebProcessProxy.h"
 #import <QuartzCore/QuartzCore.h>
+#import <WebCore/AnimationFrameRate.h>
 #import <WebCore/DeprecatedGlobalSettings.h>
 #import <WebCore/FloatPoint.h>
 #import <WebCore/GeometryUtilities.h>
@@ -562,6 +563,9 @@ void RemoteLayerTreeDrawingAreaProxyMac::setPreferredFramesPerSecond(IPC::Connec
     }
 
     updateDisplayRefreshObserverFramesPerSecond();
+    // Threaded animations run at the page's rate too.
+    if (RefPtr page = this->page())
+        protect(page->scrollingCoordinatorProxy())->animationFrameRateDidChange();
 }
 
 // Hidden and occluded views don't need to update often, unless something waits for their next presentation update,
@@ -643,6 +647,42 @@ void RemoteLayerTreeDrawingAreaProxyMac::displayNominalFramesPerSecondDidChange(
 
     if (auto* displayLink = existingDisplayLink(); displayLink && m_fullSpeedUpdateObserverID)
         displayLink->setObserverPreferredFramesPerSecond(m_displayLinkClient, *m_fullSpeedUpdateObserverID, displayLink->nominalFramesPerSecond());
+}
+
+// Accelerated animations run at the page's rendering rate, as the display link does for the page (about 60 fps, 30 in
+// low power mode, the display's full rate when the content asks for it). The WebKitDebugAnimationFrameRatePolicy default
+// selects another policy, to compare:
+// - high: every animation asks Core Animation for a high frame rate (80 to 120 fps), and threaded animations for the
+//   display's full rate.
+// - impact: animations that move or transform their layer run at the display's full rate, others at the page's rate.
+enum class AnimationFrameRatePolicy : uint8_t { Page, High, Impact };
+
+static AnimationFrameRatePolicy animationFrameRatePolicy()
+{
+    static const auto policy = [] {
+        NSString *value = [NSUserDefaults.standardUserDefaults stringForKey:@"WebKitDebugAnimationFrameRatePolicy"];
+        if ([value isEqualToString:@"high"])
+            return AnimationFrameRatePolicy::High;
+        if ([value isEqualToString:@"impact"])
+            return AnimationFrameRatePolicy::Impact;
+        return AnimationFrameRatePolicy::Page;
+    }();
+    return policy;
+}
+
+std::optional<WebCore::FramesPerSecond> RemoteLayerTreeDrawingAreaProxyMac::preferredFramesPerSecondForAnimations(bool animatesTransform) const
+{
+    auto policy = animationFrameRatePolicy();
+    if (policy == AnimationFrameRatePolicy::High || !m_displayNominalFramesPerSecond || !*m_displayNominalFramesPerSecond)
+        return std::nullopt;
+
+    auto nominalFramesPerSecond = *m_displayNominalFramesPerSecond;
+    if (policy == AnimationFrameRatePolicy::Impact && animatesTransform)
+        return nominalFramesPerSecond;
+
+    // The rate the display link runs at for the page, so that animations and rendering updates stay in step.
+    std::array<WebCore::FramesPerSecond, 1> demand { std::min(m_clientPreferredFramesPerSecond, nominalFramesPerSecond) };
+    return nominalFramesPerSecond / WebCore::displayLinkFrameRateDivisor(nominalFramesPerSecond, demand);
 }
 
 void RemoteLayerTreeDrawingAreaProxyMac::viewIsBecomingVisible()

@@ -1,0 +1,12 @@
+Accelerated animations run at the page's rendering rate: their Core Animation animations ask for 60 fps on a 240 Hz display.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The transform animation asks for 60 fps.
+PASS The opacity animation asks for 60 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

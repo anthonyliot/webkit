@@ -65,6 +65,7 @@ private:
     void displayDidRefresh(WebCore::PlatformDisplayID) override;
     void windowScreenWillChange() override;
     void windowScreenDidChange(WebCore::PlatformDisplayID, std::optional<WebCore::FramesPerSecond>) override;
+    void animationFrameRateDidChange() override;
 
     void applyScrollingTreeLayerPositionsAfterCommit() override;
 

@@ -474,30 +474,37 @@ void RemoteLayerTreeEventDispatcher::updateDisplayLinkObserverFramesPerSecond()
     if (!displayLink)
         return;
 
-    auto needsFullSpeed = [&] {
+    auto nominalFramesPerSecond = displayLink->nominalFramesPerSecond();
+    auto framesPerSecond = [&]() -> FramesPerSecond {
+        // While scrolling is live, the scrolling thread needs every frame the display can show.
         if (m_scrollingIdleTimer && m_scrollingIdleTimer->isActive())
-            return true;
+            return nominalFramesPerSecond;
 #if ENABLE(MOMENTUM_EVENT_DISPATCHER)
         if (m_momentumEventDispatcherNeedsDisplayLink)
-            return true;
-#endif
-#if ENABLE(THREADED_ANIMATIONS)
-        {
-            Locker lock { m_animationLock };
-            if (!m_animationStacks.isEmpty() || (m_monotonicTimelineRegistry && !m_monotonicTimelineRegistry->isEmpty()))
-                return true;
-        }
+            return nominalFramesPerSecond;
 #endif
         auto scrollingTree = this->scrollingTree();
-        return scrollingTree && scrollingTree->hasNodeWithActiveScrollAnimations();
-    }();
+        if (scrollingTree && scrollingTree->hasNodeWithActiveScrollAnimations())
+            return nominalFramesPerSecond;
 
-    // While scrolling is live, the scrolling thread needs every frame the display can show. Otherwise it only
-    // stays registered to avoid restarting the display link between wheel events, and has no rate preference (0),
-    // so the display link runs at the rate the other observers need. Only do this when the display link actually
-    // runs at its observers' rate; otherwise it would only change which ticks this observer gets.
-    bool hasNoRatePreference = !needsFullSpeed && displayLink->platformSupportsPreferredFramesPerSecond();
-    auto framesPerSecond = hasNoRatePreference ? 0 : displayLink->nominalFramesPerSecond();
+#if ENABLE(THREADED_ANIMATIONS)
+        // Threaded animations run at the rate the page's animations should run at.
+        bool hasAnimations = false;
+        bool hasHighImpactAnimations = false;
+        {
+            Locker lock { m_animationLock };
+            hasAnimations = !m_animationStacks.isEmpty() || (m_monotonicTimelineRegistry && !m_monotonicTimelineRegistry->isEmpty());
+            hasHighImpactAnimations = !m_highImpactAnimationLayers.isEmpty();
+        }
+        if (hasAnimations)
+            return protect(drawingAreaMac())->preferredFramesPerSecondForAnimations(hasHighImpactAnimations).value_or(nominalFramesPerSecond);
+#endif
+
+        // Otherwise it only stays registered to avoid restarting the display link between wheel events, and has no
+        // rate preference (0), so the display link runs at the rate the other observers need. Only do this when the
+        // display link actually runs at its observers' rate; otherwise it would only change which ticks this observer gets.
+        return displayLink->platformSupportsPreferredFramesPerSecond() ? 0 : nominalFramesPerSecond;
+    }();
     if (m_displayRefreshObserverFramesPerSecond == framesPerSecond)
         return;
 
@@ -776,6 +783,10 @@ void RemoteLayerTreeEventDispatcher::animationsWereAddedToNode(RemoteLayerTreeNo
     auto animationStack = node.takeAnimationStack();
     ASSERT(animationStack);
     m_animationStacks.set(node.layerID(), animationStack.releaseNonNull());
+    if (node.hasHighImpactMonotonicAnimations())
+        m_highImpactAnimationLayers.add(node.layerID());
+    else
+        m_highImpactAnimationLayers.remove(node.layerID());
 }
 
 void RemoteLayerTreeEventDispatcher::animationsWereRemovedFromNode(RemoteLayerTreeNode& node)
@@ -784,6 +795,7 @@ void RemoteLayerTreeEventDispatcher::animationsWereRemovedFromNode(RemoteLayerTr
     assertIsHeld(m_animationLock);
     if (auto animationStack = m_animationStacks.take(node.layerID()))
         animationStack->clear(protect(node.layer()).get());
+    m_highImpactAnimationLayers.remove(node.layerID());
 }
 
 void RemoteLayerTreeEventDispatcher::updateTimelinesRegistration(WebCore::ProcessIdentifier processIdentifier, const WebCore::AcceleratedTimelinesUpdate& timelinesUpdate, MonotonicTime now)
@@ -850,6 +862,8 @@ void RemoteLayerTreeEventDispatcher::updateAnimations(AnimationStacksToUpdate an
         // were re-applied.
         if (!animationStack->isEmpty())
             m_animationStacks.set(layerID, WTF::move(animationStack));
+        else
+            m_highImpactAnimationLayers.remove(layerID);
     }
 }
 

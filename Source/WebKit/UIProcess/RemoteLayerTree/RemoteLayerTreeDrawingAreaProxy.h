@@ -129,6 +129,9 @@ public:
 
     virtual void didRefreshDisplay();
     virtual bool displayLinkWantsHighFrameRateForTesting() const { return false; };
+    // The frame rate the page's Core Animation animations should run at, or std::nullopt for the default high frame
+    // rate range. animatesTransform: whether the animation moves or transforms its layer.
+    virtual std::optional<WebCore::FramesPerSecond> preferredFramesPerSecondForAnimations(bool /* animatesTransform */) const { return std::nullopt; }
 
     bool hasDebugIndicator() const { return !!m_debugIndicatorLayerTreeHost; }
 

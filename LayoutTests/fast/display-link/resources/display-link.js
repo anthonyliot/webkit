@@ -87,6 +87,23 @@ async function useNominalFramesPerSecond(framesPerSecond)
     await expectDisplayLinkFrameRates(`The display link uses a nominal rate of ${framesPerSecond} fps.`, frameRates => frameRates && frameRates.nominalFramesPerSecond == framesPerSecond);
 }
 
+// Waits until every Core Animation animation of the element's layer in the UI process asks for expectedFramesPerSecond.
+async function expectAnimationFramesPerSecond(message, element, expectedFramesPerSecond, timeout = 5000)
+{
+    const start = performance.now();
+    let framesPerSecond = [];
+    while (performance.now() - start < timeout) {
+        const properties = await UIHelper.propertiesOfLayerWithID(internals.layerIDForElement(element));
+        framesPerSecond = properties?.animationPreferredFramesPerSecond ?? [];
+        if (framesPerSecond.length && framesPerSecond.every(value => value == expectedFramesPerSecond)) {
+            testPassed(message);
+            return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    testFailed(`${message}: the layer's animations ask for [${framesPerSecond}] fps; expected ${expectedFramesPerSecond} fps`);
+}
+
 function startAnimationFrameLoop()
 {
     const box = document.getElementById("box");

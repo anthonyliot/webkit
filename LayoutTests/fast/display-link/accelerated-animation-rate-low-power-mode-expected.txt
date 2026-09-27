@@ -1,0 +1,12 @@
+In low power mode, accelerated animations run at the throttled rendering rate: their Core Animation animations ask for 30 fps.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The transform animation asks for 30 fps.
+PASS The opacity animation asks for 30 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+

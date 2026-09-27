@@ -190,6 +190,7 @@ public:
 
     virtual void windowScreenWillChange() { }
     virtual void windowScreenDidChange(WebCore::PlatformDisplayID, std::optional<WebCore::FramesPerSecond>) { }
+    virtual void animationFrameRateDidChange() { }
 
     WebCore::FloatBoxExtent obscuredContentInsets() const;
 #if HAVE(NSREFRESHCONTROLLER)

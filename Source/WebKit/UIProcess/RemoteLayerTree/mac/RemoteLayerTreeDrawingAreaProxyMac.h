@@ -55,6 +55,8 @@ public:
     DisplayLink& displayLink();
     DisplayLink* existingDisplayLink();
 
+    std::optional<WebCore::FramesPerSecond> preferredFramesPerSecondForAnimations(bool animatesTransform) const override;
+
     void NODELETE updateZoomTransactionID();
     std::optional<WebCore::PlatformLayerIdentifier> pageScalingLayerID() { return m_pageScalingLayerID.asOptional(); }
     std::optional<WebCore::PlatformLayerIdentifier> pageScrollingLayerID() { return m_pageScrollingLayerID.asOptional(); }

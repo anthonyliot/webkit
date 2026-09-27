@@ -1,0 +1,11 @@
+Threaded animations run at the page's rendering rate: on a 240 Hz display, the scrolling thread asks the display link for 60 fps for them, not the full rate.
+
+On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
+
+
+PASS The display link uses a nominal rate of 240 fps.
+PASS The page and its threaded animations both ask for 60 fps.
+PASS successfullyParsed is true
+
+TEST COMPLETE
+
