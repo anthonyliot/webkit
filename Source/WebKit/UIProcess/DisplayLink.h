@@ -94,6 +94,8 @@ public:
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink&, WebCore::PlatformDisplayID);
 // The WebKitDebugDisplayLinkLogStatistics default.
 bool displayLinkStatisticsLoggingEnabled();
+// The WebKitDebugDisplayLinkStatisticsInterval default (seconds, 5 by default): how often statistics are logged.
+Seconds displayLinkStatisticsInterval();
 #endif
 
 class DisplayLink {

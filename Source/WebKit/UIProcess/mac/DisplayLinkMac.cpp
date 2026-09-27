@@ -86,6 +86,7 @@ private:
 
     // Only used with the WebKitDebugDisplayLinkLogStatistics default; accessed on the CVDisplayLink thread.
     bool m_logStatistics { false };
+    Seconds m_statisticsInterval { 5_s };
     struct Statistics {
         double windowStart { 0 };
         double lastTick { 0 };
@@ -126,6 +127,7 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
     m_nominalFramesPerSecond = nominalFramesPerSecondFromDisplayLink(m_displayLink.get());
     m_logStatistics = displayLinkStatisticsLoggingEnabled();
+    m_statisticsInterval = displayLinkStatisticsInterval();
 }
 
 void DisplayLinkCoreVideoBackend::displayConfigurationChanged(bool)
@@ -235,15 +237,15 @@ void DisplayLinkCoreVideoBackend::recordStatistics(const CVTimeStamp& outputTime
     statistics.phases.append(phase * 1000);
 
     double elapsed = now - statistics.windowStart;
-    if (elapsed < 5)
+    if (elapsed < m_statisticsInterval.seconds())
         return;
 
     std::sort(statistics.phases.begin(), statistics.phases.end());
     auto percentile = [&](double fraction) {
         return statistics.phases[std::min<size_t>(statistics.phases.size() - 1, static_cast<size_t>(fraction * statistics.phases.size()))];
     };
-    RELEASE_LOG(DisplayLink, "[UI ] CVDisplayLink stats display %u: %.1f ticks/s; callback-vsync ms p50 %.3f p95 %.3f (p50 %.1f%% of the %.3f ms refresh interval)",
-        m_displayID, statistics.ticks / elapsed, percentile(0.5), percentile(0.95), percentile(0.5) / (period * 10), period * 1000);
+    RELEASE_LOG(DisplayLink, "[UI ] CVDisplayLink stats display %u: %.1f ticks/s over %.3f s; callback-vsync ms p50 %.3f p95 %.3f (p50 %.1f%% of the %.3f ms refresh interval)",
+        m_displayID, statistics.ticks / elapsed, elapsed, percentile(0.5), percentile(0.95), percentile(0.5) / (period * 10), period * 1000);
 
     statistics.windowStart = 0;
 }

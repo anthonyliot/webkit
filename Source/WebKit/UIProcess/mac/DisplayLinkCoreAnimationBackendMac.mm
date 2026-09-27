@@ -49,6 +49,7 @@
 //   WebKitDebugDisplayLinkThreadPolicy (qos | fixed | timeConstraint, default qos)
 //   WebKitDebugDisplayLinkFrameRateControl (bool, default YES: set preferredFrameRateRange from the observers' needs)
 //   WebKitDebugDisplayLinkLogStatistics (bool, default NO)
+//   WebKitDebugDisplayLinkStatisticsInterval (double, seconds between statistics lines, default 5)
 
 namespace WebKit {
 class DisplayLinkCoreAnimationBackend;
@@ -70,6 +71,7 @@ struct DisplayLinkCoreAnimationBackendOptions {
     DisplayLinkThreadPolicy threadPolicy { DisplayLinkThreadPolicy::QoS };
     bool frameRateControl { true };
     bool logStatistics { false };
+    Seconds statisticsInterval { 5_s };
 };
 
 static NSScreen *screenForDisplay(PlatformDisplayID displayID)
@@ -92,7 +94,6 @@ static FramesPerSecond nominalFramesPerSecondForScreen(NSScreen *screen)
     return screen.maximumFramesPerSecond > 0 ? static_cast<FramesPerSecond>(screen.maximumFramesPerSecond) : FullSpeedFramesPerSecond;
 }
 
-static constexpr Seconds statisticsInterval { 5_s };
 // Beyond this, timer slop makes a delayed notification land on the next vsync anyway.
 static constexpr double maximumCallbackDelayFraction { 0.8 };
 
@@ -531,7 +532,7 @@ void DisplayLinkCoreAnimationBackend::recordStatistics(CADisplayLink *displayLin
     statistics.lastDuration = displayLink.duration * 1000;
     statistics.lastPeriod = (displayLink.targetTimestamp - timestamp) * 1000;
 
-    if (now - statistics.windowStart >= statisticsInterval.seconds())
+    if (now - statistics.windowStart >= m_options.statisticsInterval.seconds())
         flushStatistics(now);
 }
 
@@ -547,8 +548,8 @@ void DisplayLinkCoreAnimationBackend::flushStatistics(CFTimeInterval now)
             return values[std::min<size_t>(values.size() - 1, static_cast<size_t>(fraction * values.size()))];
         };
 
-        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink stats display %u: %.1f ticks/s %.1f notifications/s (%u late); callback-vsync ms p50 %.3f p95 %.3f max %.3f; notify-vsync ms p50 %.3f p95 %.3f max %.3f; tick interval ms p50 %.3f p95 %.3f; duration %.3f period %.3f; preferred %.2f fps",
-            m_displayID, statistics.ticks / elapsed, statistics.notifications / elapsed, statistics.lateNotifications,
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink stats display %u: %.1f ticks/s %.1f notifications/s (%u late) over %.3f s; callback-vsync ms p50 %.3f p95 %.3f max %.3f; notify-vsync ms p50 %.3f p95 %.3f max %.3f; tick interval ms p50 %.3f p95 %.3f; duration %.3f period %.3f; preferred %.2f fps",
+            m_displayID, statistics.ticks / elapsed, statistics.notifications / elapsed, statistics.lateNotifications, elapsed,
             percentile(statistics.callbackLatencies, 0.5), percentile(statistics.callbackLatencies, 0.95), percentile(statistics.callbackLatencies, 1),
             percentile(statistics.notificationLatencies, 0.5), percentile(statistics.notificationLatencies, 0.95), percentile(statistics.notificationLatencies, 1),
             percentile(statistics.tickIntervals, 0.5), percentile(statistics.tickIntervals, 0.95),
@@ -579,6 +580,12 @@ bool displayLinkStatisticsLoggingEnabled()
     return [NSUserDefaults.standardUserDefaults boolForKey:@"WebKitDebugDisplayLinkLogStatistics"];
 }
 
+Seconds displayLinkStatisticsInterval()
+{
+    double seconds = [NSUserDefaults.standardUserDefaults doubleForKey:@"WebKitDebugDisplayLinkStatisticsInterval"];
+    return Seconds { seconds > 0 ? std::clamp(seconds, 0.25, 60.0) : 5.0 };
+}
+
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink& client, PlatformDisplayID displayID)
 {
     ASSERT(RunLoop::isMain());
@@ -597,6 +604,7 @@ RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnable
     options.callbackDelayFraction = std::clamp([defaults doubleForKey:@"WebKitDebugDisplayLinkCallbackDelayFraction"], 0.0, maximumCallbackDelayFraction);
     options.threadPolicy = threadPolicyFromDefaults(defaults);
     options.logStatistics = displayLinkStatisticsLoggingEnabled();
+    options.statisticsInterval = displayLinkStatisticsInterval();
     if ([defaults objectForKey:@"WebKitDebugDisplayLinkFrameRateControl"])
         options.frameRateControl = [defaults boolForKey:@"WebKitDebugDisplayLinkFrameRateControl"];
 
