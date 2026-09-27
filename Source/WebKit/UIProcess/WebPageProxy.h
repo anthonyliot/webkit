@@ -1632,6 +1632,9 @@ public:
 #endif
 
     void windowScreenDidChange(WebCore::PlatformDisplayID);
+#if PLATFORM(MAC)
+    void displayNominalFramesPerSecondDidChange();
+#endif
     std::optional<WebCore::PlatformDisplayID> displayID() const { return m_displayID; }
 
     void setUseFixedLayout(bool);
@@ -3553,6 +3556,7 @@ private:
     void updateDisplayLinkFrequency();
 #endif
     void updateWheelEventActivityAfterProcessSwap();
+    void sendWindowScreenDidChange();
 
 #if ENABLE(COORDINATED_TOUCH_EVENTS)
     void processNextQueuedTouchEvent();

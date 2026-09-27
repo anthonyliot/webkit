@@ -52,6 +52,7 @@ public:
     }
 
     FramesPerSecond nominalFramesPerSecond() const final { return m_nominalFramesPerSecond; }
+    void displayConfigurationChanged(bool displayWasAdded) final;
 
     bool isRunning() const final;
     void start() final;
@@ -108,9 +109,10 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 void DisplayLinkCoreVideoBackend::initialize()
 {
-    // FIXME: We can get here with displayID == 0 (webkit.org/b/212120), in which case CVDisplayLinkCreateWithCGDisplay()
-    // probably defaults to the main screen.
-    m_displayLink = createDisplayLinkWithDisplay(m_displayID);
+    // We can get here with displayID == 0 (webkit.org/b/212120), for windowless and offscreen views. Use the main display:
+    // a CVDisplayLink created for display 0 keeps a stale rate after the main display changes refresh rate (after
+    // 120 -> 60 -> 120 Hz, it fires about 65 times per second).
+    m_displayLink = createDisplayLinkWithDisplay(m_displayID ? m_displayID : CGMainDisplayID());
     if (!m_displayLink)
         return;
 
@@ -124,6 +126,13 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
     m_nominalFramesPerSecond = nominalFramesPerSecondFromDisplayLink(m_displayLink.get());
     m_logStatistics = displayLinkStatisticsLoggingEnabled();
+}
+
+void DisplayLinkCoreVideoBackend::displayConfigurationChanged(bool)
+{
+    // CVDisplayLink follows the display's mode on its own; only the nominal rate captured at creation needs updating.
+    if (m_displayLink)
+        m_nominalFramesPerSecond = nominalFramesPerSecondFromDisplayLink(m_displayLink.get());
 }
 
 bool DisplayLinkCoreVideoBackend::isRunning() const

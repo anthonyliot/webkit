@@ -632,6 +632,19 @@ void RemoteLayerTreeDrawingAreaProxyMac::windowScreenDidChange(PlatformDisplayID
     }
 }
 
+void RemoteLayerTreeDrawingAreaProxyMac::displayNominalFramesPerSecondDidChange()
+{
+    if (!m_displayID)
+        return;
+
+    m_displayNominalFramesPerSecond = displayNominalFramesPerSecond();
+    if (RefPtr page = this->page())
+        protect(page->scrollingCoordinatorProxy())->windowScreenDidChange(*m_displayID, m_displayNominalFramesPerSecond);
+
+    if (auto* displayLink = existingDisplayLink(); displayLink && m_fullSpeedUpdateObserverID)
+        displayLink->setObserverPreferredFramesPerSecond(m_displayLinkClient, *m_fullSpeedUpdateObserverID, displayLink->nominalFramesPerSecond());
+}
+
 void RemoteLayerTreeDrawingAreaProxyMac::viewIsBecomingVisible()
 {
     m_shouldLogNextObserverChange = true;

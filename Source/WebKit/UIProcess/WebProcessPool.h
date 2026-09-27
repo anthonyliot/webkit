@@ -264,6 +264,7 @@ public:
 #if PLATFORM(MAC)
     const WebCore::ScreenProperties& cachedScreenProperties();
     void displayPropertiesChanged(WebCore::PlatformDisplayID, CGDisplayChangeSummaryFlags);
+    void displayLinkPropertiesChanged(WebCore::PlatformDisplayID, bool displayWasAdded);
 #endif
 
 #if HAVE(DISPLAY_LINK)

@@ -1433,10 +1433,30 @@ void WebProcessPool::screenPropertiesChanged()
 #if PLATFORM(MAC)
 void WebProcessPool::displayPropertiesChanged(WebCore::PlatformDisplayID displayID, CGDisplayChangeSummaryFlags flags)
 {
-    if (auto* displayLink = displayLinks().existingDisplayLinkForDisplay(displayID))
-        displayLink->displayPropertiesChanged();
+    // The display's properties, like its refresh rate, are only final at the end of the reconfiguration.
+    if (!(flags & kCGDisplayBeginConfigurationFlag)) {
+        bool displayWasAdded = flags & kCGDisplayAddFlag;
+        displayLinkPropertiesChanged(displayID, displayWasAdded);
+        // Windowless and offscreen views use display 0, which follows the main display.
+        if (displayID == CGMainDisplayID())
+            displayLinkPropertiesChanged(0, displayWasAdded);
+    }
 
     screenPropertiesChanged();
+}
+
+void WebProcessPool::displayLinkPropertiesChanged(WebCore::PlatformDisplayID displayID, bool displayWasAdded)
+{
+    auto* displayLink = displayLinks().existingDisplayLinkForDisplay(displayID);
+    if (!displayLink || !displayLink->displayPropertiesChanged(displayWasAdded))
+        return;
+
+    for (Ref process : m_processes) {
+        for (Ref page : process->mainPages()) {
+            if (page->displayID() == displayID)
+                page->displayNominalFramesPerSecondDidChange();
+        }
+    }
 }
 
 static void displayReconfigurationCallBack(CGDirectDisplayID displayID, CGDisplayChangeSummaryFlags flags, void *userInfo)

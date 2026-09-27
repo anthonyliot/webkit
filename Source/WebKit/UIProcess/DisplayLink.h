@@ -76,6 +76,9 @@ public:
     virtual ~DisplayLinkPlatformBackend() = default;
 
     virtual WebCore::FramesPerSecond nominalFramesPerSecond() const = 0;
+    // Called on the main thread at the end of a reconfiguration of the display (for example a refresh rate change, or
+    // the display being connected again); reads the nominal rate again.
+    virtual void displayConfigurationChanged(bool displayWasAdded) = 0;
     virtual bool isRunning() const = 0;
     virtual void start() = 0;
     virtual void stop() = 0;
@@ -113,7 +116,8 @@ public:
     WebCore::PlatformDisplayID displayID() const { return m_displayID; }
     WebCore::FramesPerSecond nominalFramesPerSecond() const { return m_displayNominalFramesPerSecond; }
 
-    void NODELETE displayPropertiesChanged();
+    // Returns true if the display's nominal rate changed.
+    bool displayPropertiesChanged(bool displayWasAdded);
 
     void addObserver(Client&, DisplayLinkObserverID, WebCore::FramesPerSecond);
     void removeObserver(Client&, DisplayLinkObserverID);

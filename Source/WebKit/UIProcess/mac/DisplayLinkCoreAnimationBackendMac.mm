@@ -72,6 +72,26 @@ struct DisplayLinkCoreAnimationBackendOptions {
     bool logStatistics { false };
 };
 
+static NSScreen *screenForDisplay(PlatformDisplayID displayID)
+{
+    // Display 0 is used by windowless and offscreen views; CVDisplayLink maps it to the main display, so do the same.
+    PlatformDisplayID targetDisplayID = displayID ? displayID : CGMainDisplayID();
+    for (NSScreen *screen in NSScreen.screens) {
+        if (WebCore::displayID(screen) == targetDisplayID)
+            return screen;
+    }
+    for (NSScreen *screen in NSScreen.screens) {
+        if (WebCore::displayID(screen) == CGMainDisplayID())
+            return screen;
+    }
+    return NSScreen.screens.firstObject;
+}
+
+static FramesPerSecond nominalFramesPerSecondForScreen(NSScreen *screen)
+{
+    return screen.maximumFramesPerSecond > 0 ? static_cast<FramesPerSecond>(screen.maximumFramesPerSecond) : FullSpeedFramesPerSecond;
+}
+
 static constexpr Seconds statisticsInterval { 5_s };
 // Beyond this, timer slop makes a delayed notification land on the next vsync anyway.
 static constexpr double maximumCallbackDelayFraction { 0.8 };
@@ -93,6 +113,7 @@ public:
     }
 
     FramesPerSecond nominalFramesPerSecond() const final { return m_nominalFramesPerSecond; }
+    void displayConfigurationChanged(bool displayWasAdded) final;
     bool isRunning() const final { return m_wantsRunning; }
 
     void start() final
@@ -143,13 +164,16 @@ private:
     DisplayLinkCoreAnimationBackend(DisplayLink& client, PlatformDisplayID displayID, NSScreen *screen, const DisplayLinkCoreAnimationBackendOptions& options)
         : m_client(&client)
         , m_displayID(displayID)
-        , m_nominalFramesPerSecond(screen.maximumFramesPerSecond > 0 ? static_cast<FramesPerSecond>(screen.maximumFramesPerSecond) : FullSpeedFramesPerSecond)
+        , m_nominalFramesPerSecond(nominalFramesPerSecondForScreen(screen))
         , m_options(options)
         , m_runLoop(RunLoop::create("WebKit: CADisplayLink"_s, ThreadType::Graphics, ThreadQOS::UserInteractive))
     {
     }
 
     void initialize(NSScreen *);
+    RetainPtr<CADisplayLink> createDisplayLink(NSScreen *);
+    void addDisplayLinkToRunLoop(RetainPtr<CADisplayLink>&&);
+    void displayConfigurationChangedOnLinkThread(RetainPtr<CADisplayLink>&&);
     void configureThread();
     void scheduleSynchronizePausedState();
     void synchronizePausedState();
@@ -171,7 +195,8 @@ private:
     Lock m_clientLock;
     DisplayLink* m_client WTF_GUARDED_BY_LOCK(m_clientLock);
     const PlatformDisplayID m_displayID;
-    const FramesPerSecond m_nominalFramesPerSecond;
+    // Written on the main thread, read on both.
+    std::atomic<FramesPerSecond> m_nominalFramesPerSecond;
     const DisplayLinkCoreAnimationBackendOptions m_options;
     const Ref<RunLoop> m_runLoop;
     std::atomic<bool> m_wantsRunning { false };
@@ -201,21 +226,80 @@ void DisplayLinkCoreAnimationBackend::initialize(NSScreen *screen)
 {
     ASSERT(RunLoop::isMain());
 
-    // The link retains its target, which keeps this backend alive until the link is invalidated on the link thread.
-    RetainPtr target = adoptNS([[WKDisplayLinkBackendTarget alloc] initWithBackend:*this]);
-    RetainPtr<CADisplayLink> displayLink = [screen displayLinkWithTarget:target.get() selector:@selector(displayLinkFired:)];
-
+    auto displayLink = createDisplayLink(screen);
     RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink backend created for display %u (screen %u), nominal fps %u, delay fraction %.3f, thread policy %u, frame rate control %d, link %p",
-        m_displayID, WebCore::displayID(screen), m_nominalFramesPerSecond, m_options.callbackDelayFraction, static_cast<unsigned>(m_options.threadPolicy), m_options.frameRateControl, displayLink.get());
+        m_displayID, WebCore::displayID(screen), m_nominalFramesPerSecond.load(), m_options.callbackDelayFraction, static_cast<unsigned>(m_options.threadPolicy), m_options.frameRateControl, displayLink.get());
 
     m_runLoop->dispatch([protectedThis = Ref { *this }, displayLink = WTF::move(displayLink)] mutable {
         protectedThis->configureThread();
-        protectedThis->m_displayLink = WTF::move(displayLink);
-        [protectedThis->m_displayLink setPaused:YES];
-        [protectedThis->m_displayLink addToRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
+        protectedThis->addDisplayLinkToRunLoop(WTF::move(displayLink));
         protectedThis->applyPreferredFrameRate();
         protectedThis->synchronizePausedState();
     });
+}
+
+RetainPtr<CADisplayLink> DisplayLinkCoreAnimationBackend::createDisplayLink(NSScreen *screen)
+{
+    ASSERT(RunLoop::isMain());
+    // The link retains its target, which keeps this backend alive until the link is invalidated on the link thread.
+    RetainPtr target = adoptNS([[WKDisplayLinkBackendTarget alloc] initWithBackend:*this]);
+    return [screen displayLinkWithTarget:target.get() selector:@selector(displayLinkFired:)];
+}
+
+void DisplayLinkCoreAnimationBackend::addDisplayLinkToRunLoop(RetainPtr<CADisplayLink>&& displayLink)
+{
+    ASSERT(m_runLoop->isCurrent());
+    m_displayLink = WTF::move(displayLink);
+    [m_displayLink setPaused:YES];
+    [m_displayLink addToRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
+}
+
+void DisplayLinkCoreAnimationBackend::displayConfigurationChanged(bool displayWasAdded)
+{
+    ASSERT(RunLoop::isMain());
+    NSScreen *screen = screenForDisplay(m_displayID);
+    if (!screen)
+        return;
+
+    // The link follows the display's refresh rate on its own; the nominal rate is only read at creation.
+    auto nominalFramesPerSecond = nominalFramesPerSecondForScreen(screen);
+    bool nominalFramesPerSecondChanged = m_nominalFramesPerSecond.exchange(nominalFramesPerSecond) != nominalFramesPerSecond;
+
+    // A display that is connected again may be a new screen; don't depend on the previous link firing for it.
+    RetainPtr<CADisplayLink> displayLink;
+    if (displayWasAdded)
+        displayLink = createDisplayLink(screen);
+
+    if (!nominalFramesPerSecondChanged && !displayLink)
+        return;
+
+    RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink display %u configuration changed: nominal fps %u%s", m_displayID, nominalFramesPerSecond, displayLink ? ", new link" : "");
+    m_runLoop->dispatch([protectedThis = Ref { *this }, displayLink = WTF::move(displayLink)] mutable {
+        protectedThis->displayConfigurationChangedOnLinkThread(WTF::move(displayLink));
+    });
+}
+
+void DisplayLinkCoreAnimationBackend::displayConfigurationChangedOnLinkThread(RetainPtr<CADisplayLink>&& displayLink)
+{
+    ASSERT(m_runLoop->isCurrent());
+
+    if (displayLink) {
+        disarmDelayTimer();
+        [m_displayLink invalidate];
+        addDisplayLinkToRunLoop(WTF::move(displayLink));
+        m_frameTiming = { };
+        if (m_options.logStatistics) {
+            flushStatistics(CACurrentMediaTime());
+            m_statistics.lastTimestamp = 0;
+        }
+    }
+
+    if (m_options.threadPolicy == DisplayLinkThreadPolicy::TimeConstraint)
+        configureThread();
+    // The range depends on the nominal rate, and a new link has no range yet.
+    m_appliedFramesPerSecond = -1;
+    applyPreferredFrameRate();
+    synchronizePausedState();
 }
 
 void DisplayLinkCoreAnimationBackend::configureThread()
@@ -478,21 +562,6 @@ void DisplayLinkCoreAnimationBackend::flushStatistics(CFTimeInterval now)
     statistics.callbackLatencies.shrink(0);
     statistics.notificationLatencies.shrink(0);
     statistics.tickIntervals.shrink(0);
-}
-
-static NSScreen *screenForDisplay(PlatformDisplayID displayID)
-{
-    // Display 0 is used by windowless and offscreen views; CVDisplayLink maps it to the main display, so do the same.
-    PlatformDisplayID targetDisplayID = displayID ? displayID : CGMainDisplayID();
-    for (NSScreen *screen in NSScreen.screens) {
-        if (WebCore::displayID(screen) == targetDisplayID)
-            return screen;
-    }
-    for (NSScreen *screen in NSScreen.screens) {
-        if (WebCore::displayID(screen) == CGMainDisplayID())
-            return screen;
-    }
-    return NSScreen.screens.firstObject;
 }
 
 static DisplayLinkThreadPolicy threadPolicyFromDefaults(NSUserDefaults *defaults)

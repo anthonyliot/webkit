@@ -7077,17 +7077,32 @@ void WebPageProxy::windowScreenDidChange(PlatformDisplayID displayID)
 #endif
 
     m_displayID = displayID;
-    RefPtr drawingArea = m_drawingArea;
-    if (drawingArea)
+    if (RefPtr drawingArea = m_drawingArea)
         drawingArea->windowScreenDidChange(displayID);
 
-    if (!hasRunningProcess())
+    sendWindowScreenDidChange();
+}
+
+#if PLATFORM(MAC)
+void WebPageProxy::displayNominalFramesPerSecondDidChange()
+{
+    if (RefPtr drawingArea = m_drawingArea)
+        drawingArea->displayNominalFramesPerSecondDidChange();
+
+    sendWindowScreenDidChange();
+}
+#endif
+
+void WebPageProxy::sendWindowScreenDidChange()
+{
+    if (!hasRunningProcess() || !m_displayID)
         return;
 
+    auto displayID = *m_displayID;
     std::optional<FramesPerSecond> nominalFramesPerSecond;
     if (RefPtr pageForTesting = m_pageForTesting)
         nominalFramesPerSecond = pageForTesting->displayNominalFramesPerSecondOverride();
-    if (!nominalFramesPerSecond && drawingArea)
+    if (RefPtr drawingArea = m_drawingArea; !nominalFramesPerSecond && drawingArea)
         nominalFramesPerSecond = drawingArea->displayNominalFramesPerSecond();
 
     // FIXME (rdar://185159815): should we broadcast this to remote frame processes?

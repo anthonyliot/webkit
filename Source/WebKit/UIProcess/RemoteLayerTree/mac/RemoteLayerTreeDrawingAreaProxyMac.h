@@ -86,6 +86,7 @@ private:
     void pauseDisplayRefreshCallbacks() override;
     void setPreferredFramesPerSecond(IPC::Connection&, WebCore::FramesPerSecond) override;
     void windowScreenDidChange(WebCore::PlatformDisplayID) override;
+    void displayNominalFramesPerSecondDidChange() override;
     std::optional<WebCore::FramesPerSecond> displayNominalFramesPerSecond() override;
 
     void dispatchSetObscuredContentInsets() override;

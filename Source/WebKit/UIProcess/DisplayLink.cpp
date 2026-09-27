@@ -180,9 +180,33 @@ void DisplayLink::decrementFullSpeedRequestClientCount(Client& client)
 #endif
 }
 
-void DisplayLink::displayPropertiesChanged()
+bool DisplayLink::displayPropertiesChanged(bool displayWasAdded)
 {
-    // FIXME: Detect whether the refresh frequency changed.
+    ASSERT(RunLoop::isMain());
+#if PLATFORM(MAC)
+    RefPtr platformBackend = m_platformBackend;
+    if (!platformBackend)
+        return false;
+
+    platformBackend->displayConfigurationChanged(displayWasAdded);
+    auto nominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
+
+    Locker locker { m_clientsLock };
+    if (nominalFramesPerSecond == m_displayNominalFramesPerSecond)
+        return false;
+
+    RELEASE_LOG(DisplayLink, "[UI ] DisplayLink for display %u nominal fps changed from %u to %u", m_displayID, m_displayNominalFramesPerSecond, nominalFramesPerSecond);
+    m_displayNominalFramesPerSecond = nominalFramesPerSecond;
+    // Without frame timing, updates are counted at the nominal rate.
+    m_currentUpdate = { 0, nominalFramesPerSecond };
+    // The same divisor is a different rate now.
+    m_platformFrameRateDivisor = 0;
+    updatePlatformPreferredFramesPerSecond();
+    return true;
+#else
+    UNUSED_PARAM(displayWasAdded);
+    return false;
+#endif
 }
 
 void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLinkObserverID observerID, FramesPerSecond preferredFramesPerSecond)

@@ -894,8 +894,10 @@ void RemoteLayerTreeEventDispatcher::windowScreenDidChange(PlatformDisplayID dis
 #endif
     if (auto scrollingTree = this->scrollingTree())
         scrollingTree->windowScreenDidChange(displayID, nominalFramesPerSecond);
-    
-    // FIXME: Restart the displayLink if necessary.
+
+    // windowScreenWillChange() removed the observer from the previous display's link; add it to this display's link if
+    // scrolling still needs it. When only the nominal rate changed, this updates the rate the observer asks for.
+    startOrStopDisplayLink();
 }
 
 void RemoteLayerTreeEventDispatcher::startFingerDownSignpostInterval()

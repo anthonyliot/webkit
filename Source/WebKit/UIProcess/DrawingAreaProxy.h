@@ -89,6 +89,7 @@ public:
     virtual void deviceScaleFactorDidChange(CompletionHandler<void()>&&) = 0;
     virtual void colorSpaceDidChange() { }
     virtual void windowScreenDidChange(WebCore::PlatformDisplayID) { }
+    virtual void displayNominalFramesPerSecondDidChange() { }
     virtual std::optional<WebCore::FramesPerSecond> displayNominalFramesPerSecond() { return std::nullopt; }
 
     // FIXME: These should be pure virtual.
