@@ -30,7 +30,6 @@
 
 #include "Logging.h"
 #include <WebCore/AnimationFrameRate.h>
-#include <numeric>
 #include <wtf/RunLoop.h>
 #include <wtf/SystemTracing.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -374,48 +373,6 @@ void DisplayLink::notifyObserversDisplayDidRefresh(std::optional<DisplayLinkFram
 }
 
 #if PLATFORM(MAC)
-// Returns the divisor K of the nominal rate (the platform display link runs at nominal / K) that serves every
-// demand. Each demand d gets the largest divisor k whose rate nominal / k is at least d. The link runs at the greatest common
-// divisor of those, so that every observer gets an exact cadence, unless more than half of the ticks at that
-// rate would be unused; then it runs at the fastest demand, and slower observers get the nearest ticks.
-// There is deliberately no cap: the link runs as fast as the content asks.
-static unsigned displayLinkFrameRateDivisor(FramesPerSecond nominalFramesPerSecond, std::span<const FramesPerSecond> demands)
-{
-    Vector<unsigned, 4> divisors;
-    for (auto demand : demands) {
-        // The slowest rung that is at least the demand; the tolerance maps rates truncated to whole numbers
-        // (165 / 2 = 82.5 sent as 82) to their own divisor.
-        if (demand)
-            divisors.append(std::max(1u, static_cast<unsigned>(std::floor(static_cast<double>(nominalFramesPerSecond) / demand + 0.05))));
-    }
-    if (!nominalFramesPerSecond || divisors.isEmpty())
-        return 1;
-
-    unsigned greatestCommonDivisor = 0;
-    for (auto divisor : divisors)
-        greatestCommonDivisor = std::gcd(greatestCommonDivisor, divisor);
-    unsigned fastestDivisor = *std::min_element(divisors.begin(), divisors.end());
-    if (greatestCommonDivisor == fastestDivisor)
-        return fastestDivisor;
-
-    // Fraction of the ticks at the greatest common divisor that are due for at least one demand, over one cycle.
-    constexpr unsigned maximumCycle = 10000;
-    unsigned cycle = 1;
-    for (auto divisor : divisors) {
-        cycle = std::lcm(cycle, divisor);
-        if (cycle > maximumCycle)
-            break;
-    }
-    unsigned ticks = std::min(cycle, maximumCycle) / greatestCommonDivisor;
-    unsigned dueTicks = 0;
-    for (unsigned tick = 0; tick < ticks; ++tick) {
-        unsigned vsync = tick * greatestCommonDivisor;
-        if (std::ranges::any_of(divisors, [&](unsigned divisor) { return !(vsync % divisor); }))
-            ++dueTicks;
-    }
-    return 2 * dueTicks >= ticks ? greatestCommonDivisor : fastestDivisor;
-}
-
 void DisplayLink::updatePlatformPreferredFramesPerSecond()
 {
     ASSERT(RunLoop::isMain());

@@ -26,6 +26,7 @@
 #pragma once
 
 #include <WebCore/PlatformExportMacros.h>
+#include <span>
 #include <wtf/OptionSet.h>
 #include <wtf/Seconds.h>
 
@@ -64,6 +65,10 @@ WEBCORE_EXPORT std::optional<FramesPerSecond> NODELETE preferredFramesPerSecond(
 WEBCORE_EXPORT Seconds NODELETE preferredFrameInterval(OptionSet<ThrottlingReason>, std::optional<FramesPerSecond> nominalFramesPerSecond, bool preferFrameRatesNear60FPS);
 
 WEBCORE_EXPORT FramesPerSecond preferredFramesPerSecondFromInterval(Seconds);
+
+// The divisor K of the display's nominal rate at which a display link should fire (nominal / K) to serve every demand
+// (in frames per second; 0 means no rate preference). Returns 1, the full rate, when no demand has a preference.
+WEBCORE_EXPORT unsigned displayLinkFrameRateDivisor(FramesPerSecond nominalFramesPerSecond, std::span<const FramesPerSecond> demands);
 
 WEBCORE_EXPORT WTF::TextStream& operator<<(WTF::TextStream&, const OptionSet<ThrottlingReason>&);
 

@@ -26,6 +26,7 @@
 #include "config.h"
 #include <WebCore/AnimationFrameRate.h>
 #include <WebCore/DisplayUpdate.h>
+#include <wtf/Vector.h>
 
 using namespace WebCore;
 
@@ -270,6 +271,75 @@ TEST(AnimationFrameRate, displayUpdateRelevancy)
     ASSERT_TRUE(frame4.relevantForUpdateFrequency(FullSpeedFramesPerSecond));
     ASSERT_TRUE(frame4.relevantForUpdateFrequency(HalfSpeedThrottlingFramesPerSecond));
     ASSERT_TRUE(frame4.relevantForUpdateFrequency(quarterSpeedFrameRate));
+}
+
+static unsigned divisor(FramesPerSecond nominalFramesPerSecond, Vector<FramesPerSecond> demands)
+{
+    return displayLinkFrameRateDivisor(nominalFramesPerSecond, demands.span());
+}
+
+TEST(AnimationFrameRate, displayLinkFrameRateDivisorSingleDemand)
+{
+    // A page rendering at 60 fps doesn't need the display link to fire faster than 60 fps, whatever the display's rate.
+    ASSERT_EQ(divisor(60, { 60 }), 1u);
+    ASSERT_EQ(divisor(120, { 60 }), 2u);
+    ASSERT_EQ(divisor(240, { 60 }), 4u);
+    // The slowest rate that is at least the demand.
+    ASSERT_EQ(divisor(144, { 60 }), 2u); // 72 fps
+    ASSERT_EQ(divisor(100, { 60 }), 1u); // 50 fps would be too slow.
+    ASSERT_EQ(divisor(165, { 60 }), 2u); // 82.5 fps
+    // Throttled pages.
+    ASSERT_EQ(divisor(60, { 30 }), 2u);
+    ASSERT_EQ(divisor(120, { 30 }), 4u);
+    ASSERT_EQ(divisor(240, { 30 }), 8u);
+    ASSERT_EQ(divisor(120, { 10 }), 12u);
+}
+
+TEST(AnimationFrameRate, displayLinkFrameRateDivisorNoCap)
+{
+    // Content that asks for the display's full rate gets it: there is no fixed cap.
+    ASSERT_EQ(divisor(240, { 240 }), 1u);
+    ASSERT_EQ(divisor(240, { 120 }), 2u);
+    ASSERT_EQ(divisor(120, { 120 }), 1u);
+    ASSERT_EQ(divisor(240, { 1000 }), 1u);
+}
+
+TEST(AnimationFrameRate, displayLinkFrameRateDivisorWholeNumberDemands)
+{
+    // Rates sent as whole numbers map to their own divisor, whether they were rounded down or up.
+    ASSERT_EQ(divisor(165, { 82 }), 2u); // 82.5 fps
+    ASSERT_EQ(divisor(165, { 83 }), 2u);
+    ASSERT_EQ(divisor(175, { 58 }), 3u); // 58.33 fps
+    ASSERT_EQ(divisor(175, { 59 }), 3u);
+    ASSERT_EQ(divisor(144, { 72 }), 2u);
+    ASSERT_EQ(divisor(144, { 73 }), 2u);
+    // Beyond the tolerance, the next faster rate.
+    ASSERT_EQ(divisor(144, { 76 }), 1u);
+}
+
+TEST(AnimationFrameRate, displayLinkFrameRateDivisorSeveralDemands)
+{
+    // The display link fires at a rate that gives every demand an exact cadence.
+    ASSERT_EQ(divisor(240, { 60, 240 }), 1u); // A page and live scrolling.
+    ASSERT_EQ(divisor(240, { 60, 30 }), 4u);
+    ASSERT_EQ(divisor(120, { 60, 30, 10 }), 2u);
+    // Unless most of its ticks would be unused; then it fires at the fastest demand.
+    ASSERT_EQ(divisor(240, { 60, 48 }), 4u);
+    // 60 and 40 on 120 Hz: 120 fps uses two thirds of the ticks.
+    ASSERT_EQ(divisor(120, { 60, 40 }), 1u);
+    // 40 and 30 on 120 Hz: 120 fps uses exactly half of the ticks, which is still enough.
+    ASSERT_EQ(divisor(120, { 40, 30 }), 1u);
+}
+
+TEST(AnimationFrameRate, displayLinkFrameRateDivisorNoPreference)
+{
+    // A demand of 0 has no rate preference and doesn't make the display link fire faster.
+    ASSERT_EQ(divisor(120, { 0, 60 }), 2u);
+    ASSERT_EQ(divisor(120, { 0, 30 }), 4u);
+    // With no preference at all, the full rate; DisplayLink substitutes its idle rate before asking.
+    ASSERT_EQ(divisor(120, { 0 }), 1u);
+    ASSERT_EQ(divisor(120, { }), 1u);
+    ASSERT_EQ(divisor(0, { 60 }), 1u);
 }
 
 } // namespace TestWebKitAPI
