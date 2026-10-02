@@ -70,18 +70,6 @@ static FramesPerSecond nominalFramesPerSecondForScreen(NSScreen *screen)
     return screen.maximumFramesPerSecond > 0 ? static_cast<FramesPerSecond>(screen.maximumFramesPerSecond) : FullSpeedFramesPerSecond;
 }
 
-// When the CADisplayLink backend notifies DisplayLink of a tick: this fraction of the display's refresh interval after
-// the vsync the tick is for. The link calls back at the vsync; a CVDisplayLink calls back from a quarter to over half of
-// the interval after it, depending on the app.
-constexpr double displayLinkNotificationPhase = 0.15;
-
-// How long after `now` DisplayLink is notified of a tick of a link for the vsync at `timestamp`, given the display's
-// refresh interval, `duration`: at that phase, or at once if that's past.
-static Seconds displayLinkNotificationDelay(double timestamp, double duration, double now)
-{
-    return Seconds { std::max(0.0, timestamp + displayLinkNotificationPhase * duration - now) };
-}
-
 class DisplayLinkCoreAnimationBackend final : public DisplayLinkPlatformBackend {
     WTF_MAKE_TZONE_ALLOCATED_INLINE(DisplayLinkCoreAnimationBackend);
 public:
@@ -106,6 +94,20 @@ public:
     bool supportsFrameRateDivisor() const final { return true; }
     void setFrameRateDivisor(unsigned) final;
     bool displayConfigurationChanged(PlatformDisplayID, CGDisplayChangeSummaryFlags) final;
+    void startRecordingStateForTesting() final { m_recordsStateForTesting.store(true, std::memory_order_relaxed); }
+    std::optional<StateForTesting> stateForTesting() const final
+    {
+        return StateForTesting {
+            m_wantsRunning,
+            m_tickCountForTesting.load(std::memory_order_relaxed),
+            m_countedFramesPerSecondForTesting.load(std::memory_order_relaxed),
+            m_requestedDivisor.load(),
+            m_appliedDivisorForTesting.load(std::memory_order_relaxed),
+            m_denialCount.load(std::memory_order_relaxed),
+            m_delayedNotificationCountForTesting.load(std::memory_order_relaxed),
+            m_minimumDelayedNotificationPhaseForTesting.load(std::memory_order_relaxed),
+        };
+    }
 
     // Called on the link thread for each tick of the CADisplayLink.
     void tick(CADisplayLink *);
@@ -128,7 +130,9 @@ private:
     void notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration, DisplayUpdate);
     // On the link thread, when it's time to notify DisplayLink of the tick that waits for it.
     static void notificationTimerCallback(CFRunLoopTimerRef, void* backend);
-    void notifyPendingUpdate();
+    void notificationTimerFired();
+    // Returns whether DisplayLink was notified.
+    bool notifyPendingUpdate();
 
     Lock m_clientLock;
     // Cleared by invalidate(); no call into the DisplayLink can happen afterwards.
@@ -140,6 +144,16 @@ private:
     std::atomic<bool> m_wantsRunning { false };
     // The divisor of the nominal rate DisplayLink asks for.
     std::atomic<unsigned> m_requestedDivisor { 1 };
+    // Set by startRecordingStateForTesting(); each tick then writes the three members below, and each notification the
+    // timer sends, the last two.
+    std::atomic<bool> m_recordsStateForTesting { false };
+    std::atomic<uint64_t> m_tickCountForTesting { 0 };
+    std::atomic<FramesPerSecond> m_countedFramesPerSecondForTesting { 0 };
+    std::atomic<unsigned> m_appliedDivisorForTesting { 0 };
+    std::atomic<uint64_t> m_delayedNotificationCountForTesting { 0 };
+    std::atomic<double> m_minimumDelayedNotificationPhaseForTesting { std::numeric_limits<double>::infinity() };
+    // The requests Core Animation didn't grant, written on the link thread.
+    std::atomic<unsigned> m_denialCount { 0 };
 
     // The link thread, created on the first start(), so that a DisplayLink that is only created to read the display's
     // rate doesn't create one. Written once, on the main thread, before anything is dispatched to it; read on both.
@@ -380,6 +394,9 @@ void DisplayLinkCoreAnimationBackend::invalidateOnLinkThread()
 void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
 {
     ASSERT(protect(m_runLoop)->isCurrent());
+    bool recordsStateForTesting = m_recordsStateForTesting.load(std::memory_order_relaxed);
+    if (recordsStateForTesting) [[unlikely]]
+        m_tickCountForTesting.fetch_add(1, std::memory_order_relaxed);
     // The main thread may have cleared m_wantsRunning before the link thread paused the link.
     if (!m_wantsRunning)
         return;
@@ -387,6 +404,10 @@ void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
     auto timestamp = displayLink.timestamp;
     auto duration = displayLink.duration;
     auto result = m_rateController.tick(timestamp, displayLink.targetTimestamp, duration, m_nominalFramesPerSecond);
+    if (recordsStateForTesting) [[unlikely]] {
+        m_countedFramesPerSecondForTesting.store(result.update.updatesPerSecond, std::memory_order_relaxed);
+        m_appliedDivisorForTesting.store(m_rateController.appliedDivisor(), std::memory_order_relaxed);
+    }
 
     // The divisor isn't asked of this link again until it resumes, or until the display's rate changes.
     if (result.requestDenied) {
@@ -395,6 +416,7 @@ void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
             m_loggedDenials.deny(result.requestedDivisor);
             RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink for display %u fires every %u vsyncs instead of %u; running it at the display's rate", m_displayID, result.linkDivisor, result.requestedDivisor);
         }
+        m_denialCount.fetch_add(1, std::memory_order_relaxed);
         applyFrameRateDivisor(m_requestedDivisor);
     }
 
@@ -405,7 +427,7 @@ void DisplayLinkCoreAnimationBackend::notificationTimerCallback(CFRunLoopTimerRe
 {
     // As for a tick of the link.
     @autoreleasepool {
-        Ref { *static_cast<DisplayLinkCoreAnimationBackend*>(backend) }->notifyPendingUpdate();
+        Ref { *static_cast<DisplayLinkCoreAnimationBackend*>(backend) }->notificationTimerFired();
     }
 }
 
@@ -435,16 +457,34 @@ void DisplayLinkCoreAnimationBackend::notifyAfterVSync(CFTimeInterval timestamp,
     CFRunLoopAddTimer(protect(CFRunLoopGetCurrent()).get(), m_notificationTimer.get(), kCFRunLoopCommonModes);
 }
 
-void DisplayLinkCoreAnimationBackend::notifyPendingUpdate()
+void DisplayLinkCoreAnimationBackend::notificationTimerFired()
+{
+    ASSERT(protect(m_runLoop)->isCurrent());
+    bool recordsStateForTesting = m_recordsStateForTesting.load(std::memory_order_relaxed);
+    // From the link's own values for its latest tick, which a pending update is for: the next tick sends it first.
+    double phase = 0;
+    if (recordsStateForTesting && [m_displayLink duration] > 0) [[unlikely]]
+        phase = (CACurrentMediaTime() - [m_displayLink timestamp]) / [m_displayLink duration];
+    if (notifyPendingUpdate() && recordsStateForTesting) [[unlikely]] {
+        m_delayedNotificationCountForTesting.fetch_add(1, std::memory_order_relaxed);
+        if (phase < m_minimumDelayedNotificationPhaseForTesting.load(std::memory_order_relaxed))
+            m_minimumDelayedNotificationPhaseForTesting.store(phase, std::memory_order_relaxed);
+    }
+}
+
+bool DisplayLinkCoreAnimationBackend::notifyPendingUpdate()
 {
     ASSERT(protect(m_runLoop)->isCurrent());
     auto update = std::exchange(m_pendingUpdate, std::nullopt);
     // As at a tick, the main thread may have cleared m_wantsRunning meanwhile.
     if (!update || !m_wantsRunning)
-        return;
+        return false;
     Locker locker { m_clientLock };
-    if (auto* client = m_client)
+    if (auto* client = m_client) {
         displayLinkFired(*client, *update);
+        return true;
+    }
+    return false;
 }
 
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink& client, PlatformDisplayID displayID)

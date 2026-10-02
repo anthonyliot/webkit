@@ -226,6 +226,14 @@ void DisplayLink::updatePlatformFrameRateDivisor()
     protect(m_platformBackend)->setFrameRateDivisor(divisor);
 }
 
+std::optional<DisplayLinkPlatformBackend::StateForTesting> DisplayLink::platformStateForTesting()
+{
+    ASSERT(RunLoop::isMain());
+    Ref platformBackend = *m_platformBackend;
+    platformBackend->startRecordingStateForTesting();
+    return platformBackend->stateForTesting();
+}
+
 void DisplayLink::platformInitialize()
 {
     ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));

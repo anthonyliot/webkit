@@ -77,6 +77,31 @@ public:
     // Called on the main thread: fire every `divisor` vsyncs, 1 meaning at the display's rate.
     virtual void setFrameRateDivisor(unsigned) { }
 
+    struct StateForTesting {
+        // Whether the backend is to run.
+        bool isRunning { false };
+        // The platform display link's callbacks since recording started.
+        uint64_t tickCount { 0 };
+        // The rate the backend counts updates at, which is the rate the platform display link fires at, as of its last
+        // tick since recording started; 0 until then.
+        WebCore::FramesPerSecond countedFramesPerSecond { 0 };
+        // The divisor DisplayLink asked for.
+        unsigned requestedDivisor { 0 };
+        // The divisor the platform display link was asked for, 1 when it didn't get the requested one, as of its last
+        // tick since recording started; 0 until then.
+        unsigned appliedDivisor { 0 };
+        // The requests the platform display link didn't grant since the backend was created.
+        unsigned denialCount { 0 };
+        // The notifications sent part way into a vsync, after a tick, since recording started, and the earliest of them,
+        // in refresh intervals after the vsync.
+        uint64_t delayedNotificationCount { 0 };
+        double minimumDelayedNotificationPhase { 0 };
+    };
+    // For backends that count their updates. Ticks are recorded from the first call to startRecordingStateForTesting(),
+    // so that until then, a tick only reads whether to record.
+    virtual void startRecordingStateForTesting() { }
+    virtual std::optional<StateForTesting> stateForTesting() const { return std::nullopt; }
+
 protected:
     // Called by the backend on its display link thread, once per tick. A backend that supports a frame rate divisor
     // passes the update it counted.
@@ -127,6 +152,12 @@ public:
 
 #if PLATFORM(GTK) || PLATFORM(WPE)
     DisplayVBlankMonitor& vblankMonitor() const LIFETIME_BOUND { return *m_vblankMonitor; }
+#endif
+
+#if PLATFORM(MAC)
+    // The state of a platform display link that counts its updates (CADisplayLink), whose ticks are recorded from the
+    // first call; std::nullopt for CVDisplayLink.
+    std::optional<DisplayLinkPlatformBackend::StateForTesting> platformStateForTesting();
 #endif
 
 private:

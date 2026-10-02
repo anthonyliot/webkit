@@ -36,10 +36,11 @@
 #include <numeric>
 #include <optional>
 #include <span>
+#include <wtf/Seconds.h>
 
 // The rate logic of the UI process's DisplayLink with a platform display link that can fire below the display's rate
-// (the CADisplayLink backend). Mac only. It is all in this header, which TestWebKitAPI gets in WebKitTestSupport, so
-// that it can be tested without exporting anything from WebKit.
+// (the CADisplayLink backend), and when that backend notifies DisplayLink of a tick. Mac only. It is all in this header,
+// which TestWebKitAPI gets in WebKitTestSupport, so that it can be tested without exporting anything from WebKit.
 
 namespace WebKit {
 
@@ -168,6 +169,15 @@ struct DisplayLinkReconfigurationState {
 };
 DisplayLinkReconfiguration displayLinkReconfiguration(const DisplayLinkReconfigurationState&);
 
+// When the CADisplayLink backend notifies DisplayLink of a tick: this fraction of the display's refresh interval after
+// the vsync the tick is for. The link calls back at the vsync; a CVDisplayLink calls back from a quarter to over half of
+// the interval after it, depending on the app.
+constexpr double displayLinkNotificationPhase = 0.15;
+
+// How long after `now` DisplayLink is notified of a tick of a link for the vsync at `timestamp`, given the display's
+// refresh interval, `duration`: at that phase, or at once if that's past.
+Seconds displayLinkNotificationDelay(double timestamp, double duration, double now);
+
 inline unsigned displayLinkFrameRateDivisor(WebCore::FramesPerSecond nominalFramesPerSecond, std::span<const WebCore::FramesPerSecond> demands)
 {
     if (!nominalFramesPerSecond)
@@ -291,6 +301,11 @@ inline DisplayLinkReconfiguration displayLinkReconfiguration(const DisplayLinkRe
     if (*state.screenDisplayID != state.linkDisplayID || (state.reconfiguredDisplayID == *state.screenDisplayID && state.displayWasAdded))
         return DisplayLinkReconfiguration::ReplaceLink;
     return state.nominalRateChanged ? DisplayLinkReconfiguration::NominalRateChanged : DisplayLinkReconfiguration::None;
+}
+
+inline Seconds displayLinkNotificationDelay(double timestamp, double duration, double now)
+{
+    return Seconds { std::max(0.0, timestamp + displayLinkNotificationPhase * duration - now) };
 }
 
 } // namespace WebKit

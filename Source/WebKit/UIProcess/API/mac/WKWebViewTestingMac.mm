@@ -28,12 +28,15 @@
 
 #if PLATFORM(MAC)
 
+#import "APIPageConfiguration.h"
 #import "AppKitSPI.h"
 #import "AudioSessionRoutingArbitratorProxy.h"
+#import "DisplayLink.h"
 #import "WKNSData.h"
 #import "WKWebViewMac.h"
 #import "WebColorPicker.h"
 #import "WebPageProxy.h"
+#import "WebProcessPool.h"
 #import "WebProcessProxy.h"
 #import "WebViewImpl.h"
 #import "_WKFrameHandleInternal.h"
@@ -164,6 +167,35 @@
     return _impl->refreshControllerIsTracking();
 #else
     return NO;
+#endif
+}
+
+- (NSDictionary<NSString *, id> *)_displayLinkStateForTesting
+{
+#if HAVE(DISPLAY_LINK)
+    auto displayID = _page ? _page->displayID() : std::nullopt;
+    auto* displayLink = displayID ? protect(_page->configuration())->processPool().displayLinks().existingDisplayLinkForDisplay(*displayID) : nullptr;
+    if (!displayLink)
+        return nil;
+
+    auto state = displayLink->platformStateForTesting();
+    if (!state)
+        return @{ @"backend": @"CoreVideo", @"nominalFramesPerSecond": @(displayLink->nominalFramesPerSecond()), @"displayID": @(displayLink->displayID()) };
+    return @{
+        @"backend": @"CoreAnimation",
+        @"nominalFramesPerSecond": @(displayLink->nominalFramesPerSecond()),
+        @"displayID": @(displayLink->displayID()),
+        @"isRunning": @(state->isRunning),
+        @"tickCount": @(state->tickCount),
+        @"countedFramesPerSecond": @(state->countedFramesPerSecond),
+        @"requestedDivisor": @(state->requestedDivisor),
+        @"appliedDivisor": @(state->appliedDivisor),
+        @"denialCount": @(state->denialCount),
+        @"delayedNotificationCount": @(state->delayedNotificationCount),
+        @"minimumDelayedNotificationPhase": @(state->minimumDelayedNotificationPhase),
+    };
+#else
+    return nil;
 #endif
 }
 

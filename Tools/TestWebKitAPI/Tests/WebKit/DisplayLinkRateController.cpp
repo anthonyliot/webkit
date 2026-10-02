@@ -687,6 +687,17 @@ TEST(DisplayLinkRate, Reconfiguration)
     EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 5, .reconfiguredDisplayID = 7 }), DisplayLinkReconfiguration::None);
 }
 
+// DisplayLink is notified 15% of the display's refresh interval after the vsync a tick is for, sooner after a late tick,
+// and at once if the tick comes later than that, or the link doesn't know the interval yet.
+TEST(DisplayLinkRate, NotificationDelay)
+{
+    double duration = 1. / 240;
+    EXPECT_NEAR(displayLinkNotificationDelay(10, duration, 10).seconds(), 0.15 * duration, 1e-12);
+    EXPECT_NEAR(displayLinkNotificationDelay(10, duration, 10 + 0.05 * duration).seconds(), 0.1 * duration, 1e-12);
+    EXPECT_EQ(displayLinkNotificationDelay(10, duration, 10 + 0.2 * duration), 0_s);
+    EXPECT_EQ(displayLinkNotificationDelay(10, 0, 10), 0_s);
+}
+
 } // namespace TestWebKitAPI
 
 #endif // PLATFORM(MAC)

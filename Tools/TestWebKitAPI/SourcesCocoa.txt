@@ -129,6 +129,7 @@ Tests/WebKit/WKWebView/DeviceManagementRestrictions.mm @nonARC
 Tests/WebKit/WKWebView/DeviceOrientation.mm @nonARC
 Tests/WebKit/WKWebView/DictationStreamingOpacity.mm @nonARC
 Tests/WebKit/WKWebView/DisableSpellcheck.mm @nonARC
+Tests/WebKit/WKWebView/DisplayLinkFrameRate.mm @nonARC
 Tests/WebKit/WKWebView/DisplayName.mm @nonARC
 Tests/WebKit/WKWebView/DoAfterNextPresentationUpdateAfterCrash.mm @nonARC
 Tests/WebKit/WKWebView/DoAfterNextPresentationUpdateOffscreen.mm @nonARC
