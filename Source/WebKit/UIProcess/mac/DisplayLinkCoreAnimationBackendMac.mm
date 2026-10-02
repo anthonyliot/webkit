@@ -39,7 +39,8 @@
 #import <wtf/TZoneMallocInlines.h>
 
 // An experimental DisplayLink backend driven by CADisplayLink. It is selected when a DisplayLink is created, with the
-// WebKitDebugDisplayLinkBackend default set to "CoreAnimation"; DisplayLink uses CVDisplayLink otherwise.
+// WebKitDebugDisplayLinkBackend default set to "CoreAnimation"; DisplayLink uses CVDisplayLink otherwise. With the
+// WebKitDebugDisplayLinkLogStatistics default, it logs the rate it fires at while it runs, about once a second.
 
 namespace WebKit {
 class DisplayLinkCoreAnimationBackend;
@@ -73,9 +74,9 @@ static FramesPerSecond nominalFramesPerSecondForScreen(NSScreen *screen)
 class DisplayLinkCoreAnimationBackend final : public DisplayLinkPlatformBackend {
     WTF_MAKE_TZONE_ALLOCATED_INLINE(DisplayLinkCoreAnimationBackend);
 public:
-    static Ref<DisplayLinkCoreAnimationBackend> create(DisplayLink& client, PlatformDisplayID displayID, FramesPerSecond nominalFramesPerSecond)
+    static Ref<DisplayLinkCoreAnimationBackend> create(DisplayLink& client, PlatformDisplayID displayID, FramesPerSecond nominalFramesPerSecond, bool logStatistics)
     {
-        return adoptRef(*new DisplayLinkCoreAnimationBackend(client, displayID, nominalFramesPerSecond));
+        return adoptRef(*new DisplayLinkCoreAnimationBackend(client, displayID, nominalFramesPerSecond, logStatistics));
     }
 
     ~DisplayLinkCoreAnimationBackend()
@@ -113,10 +114,11 @@ public:
     void tick(CADisplayLink *);
 
 private:
-    DisplayLinkCoreAnimationBackend(DisplayLink& client, PlatformDisplayID displayID, FramesPerSecond nominalFramesPerSecond)
+    DisplayLinkCoreAnimationBackend(DisplayLink& client, PlatformDisplayID displayID, FramesPerSecond nominalFramesPerSecond, bool logStatistics)
         : m_client(&client)
         , m_displayID(displayID)
         , m_nominalFramesPerSecond(nominalFramesPerSecond)
+        , m_logStatistics(logStatistics)
     {
     }
 
@@ -127,6 +129,7 @@ private:
     void invalidateDisplayLink();
     void invalidateOnLinkThread();
     void applyFrameRateDivisor(unsigned);
+    void recordStatistics(CFTimeInterval timestamp, DisplayUpdate);
     void notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration, DisplayUpdate);
     // On the link thread, when it's time to notify DisplayLink of the tick that waits for it.
     static void notificationTimerCallback(CFRunLoopTimerRef, void* backend);
@@ -144,6 +147,7 @@ private:
     std::atomic<bool> m_wantsRunning { false };
     // The divisor of the nominal rate DisplayLink asks for.
     std::atomic<unsigned> m_requestedDivisor { 1 };
+    const bool m_logStatistics;
     // Set by startRecordingStateForTesting(); each tick then writes the three members below, and each notification the
     // timer sends, the last two.
     std::atomic<bool> m_recordsStateForTesting { false };
@@ -178,6 +182,10 @@ private:
     // RunLoop::Timer that fired would make a new CFRunLoopTimer each time.)
     std::optional<DisplayUpdate> m_pendingUpdate;
     RetainPtr<CFRunLoopTimerRef> m_notificationTimer;
+    // With the WebKitDebugDisplayLinkLogStatistics default: the window of the next line, from its first tick. The first
+    // tick a second or more later writes the line, and opens the next window.
+    CFTimeInterval m_statisticsWindowStart { 0 };
+    unsigned m_statisticsTicks { 0 };
 };
 
 void DisplayLinkCoreAnimationBackend::start()
@@ -367,6 +375,8 @@ void DisplayLinkCoreAnimationBackend::synchronizePausedState()
         applyFrameRateDivisor(m_requestedDivisor);
     }
     [m_displayLink setPaused:shouldPause];
+    // Paused time doesn't count.
+    m_statisticsWindowStart = 0;
 }
 
 void DisplayLinkCoreAnimationBackend::invalidateDisplayLink()
@@ -408,6 +418,8 @@ void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
         m_countedFramesPerSecondForTesting.store(result.update.updatesPerSecond, std::memory_order_relaxed);
         m_appliedDivisorForTesting.store(m_rateController.appliedDivisor(), std::memory_order_relaxed);
     }
+    if (m_logStatistics) [[unlikely]]
+        recordStatistics(timestamp, result.update);
 
     // The divisor isn't asked of this link again until it resumes, or until the display's rate changes.
     if (result.requestDenied) {
@@ -487,6 +499,24 @@ bool DisplayLinkCoreAnimationBackend::notifyPendingUpdate()
     return false;
 }
 
+void DisplayLinkCoreAnimationBackend::recordStatistics(CFTimeInterval timestamp, DisplayUpdate update)
+{
+    ASSERT(protect(m_runLoop)->isCurrent());
+    if (!m_statisticsWindowStart) {
+        m_statisticsWindowStart = timestamp;
+        m_statisticsTicks = 0;
+    }
+    ++m_statisticsTicks;
+    auto elapsed = timestamp - m_statisticsWindowStart;
+    if (elapsed < 1)
+        return;
+    // The rate Core Animation grants for the requested range: preferredFrameRateRange is a request.
+    RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink stats display %u: %.1f ticks/s over %.3f s; counting at %u fps; divisor %u requested, %u applied",
+        m_displayID, (m_statisticsTicks - 1) / elapsed, elapsed, update.updatesPerSecond, m_requestedDivisor.load(), m_rateController.appliedDivisor());
+    m_statisticsWindowStart = timestamp;
+    m_statisticsTicks = 1;
+}
+
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink& client, PlatformDisplayID displayID)
 {
     if (![[NSUserDefaults.standardUserDefaults stringForKey:@"WebKitDebugDisplayLinkBackend"] isEqualToString:@"CoreAnimation"])
@@ -501,7 +531,8 @@ RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnable
 
     auto nominalFramesPerSecond = nominalFramesPerSecondForScreen(screen);
     RELEASE_LOG(DisplayLink, "[UI ] Using CADisplayLink for display %u (nominal fps %u)", displayID, nominalFramesPerSecond);
-    return DisplayLinkCoreAnimationBackend::create(client, displayID, nominalFramesPerSecond);
+    bool logStatistics = [NSUserDefaults.standardUserDefaults boolForKey:@"WebKitDebugDisplayLinkLogStatistics"];
+    return DisplayLinkCoreAnimationBackend::create(client, displayID, nominalFramesPerSecond, logStatistics);
 }
 
 } // namespace WebKit
