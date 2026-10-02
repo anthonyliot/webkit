@@ -69,6 +69,18 @@ static FramesPerSecond nominalFramesPerSecondForScreen(NSScreen *screen)
     return screen.maximumFramesPerSecond > 0 ? static_cast<FramesPerSecond>(screen.maximumFramesPerSecond) : FullSpeedFramesPerSecond;
 }
 
+// When the CADisplayLink backend notifies DisplayLink of a tick: this fraction of the display's refresh interval after
+// the vsync the tick is for. The link calls back at the vsync; a CVDisplayLink calls back from a quarter to over half of
+// the interval after it, depending on the app.
+constexpr double displayLinkNotificationPhase = 0.15;
+
+// How long after `now` DisplayLink is notified of a tick of a link for the vsync at `timestamp`, given the display's
+// refresh interval, `duration`: at that phase, or at once if that's past.
+static Seconds displayLinkNotificationDelay(double timestamp, double duration, double now)
+{
+    return Seconds { std::max(0.0, timestamp + displayLinkNotificationPhase * duration - now) };
+}
+
 class DisplayLinkCoreAnimationBackend final : public DisplayLinkPlatformBackend {
     WTF_MAKE_TZONE_ALLOCATED_INLINE(DisplayLinkCoreAnimationBackend);
 public:
@@ -80,6 +92,9 @@ public:
     ~DisplayLinkCoreAnimationBackend()
     {
         ASSERT(!m_displayLink);
+        // The notification timer's context is this backend: invalidateOnLinkThread() invalidated it.
+        ASSERT(!m_notificationTimer);
+        ASSERT(!m_hasPendingUpdate);
     }
 
     FramesPerSecond nominalFramesPerSecond() const final { return m_nominalFramesPerSecond; }
@@ -104,6 +119,10 @@ private:
     void scheduleSynchronizePausedState();
     void synchronizePausedState();
     void invalidateOnLinkThread();
+    void notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration);
+    // On the link thread, when it's time to notify DisplayLink of the tick that waits for it.
+    static void notificationTimerCallback(CFRunLoopTimerRef, void* backend);
+    void notifyPendingUpdate();
 
     Lock m_clientLock;
     // Cleared by invalidate(); no call into the DisplayLink can happen afterwards.
@@ -122,6 +141,11 @@ private:
 
     // Only accessed on the link thread.
     RetainPtr<CADisplayLink> m_displayLink;
+    // DisplayLink is notified part way into each vsync, not at the vsync, where CADisplayLink calls back: whether a
+    // tick waits for it, and the timer that sends it, made on the first tick and rescheduled at each one. (A
+    // RunLoop::Timer that fired would make a new CFRunLoopTimer each time.)
+    bool m_hasPendingUpdate { false };
+    RetainPtr<CFRunLoopTimerRef> m_notificationTimer;
 };
 
 void DisplayLinkCoreAnimationBackend::start()
@@ -223,16 +247,65 @@ void DisplayLinkCoreAnimationBackend::invalidateOnLinkThread()
         [m_displayLink invalidate];
         m_displayLink = nil;
     }
+    // The notification of the link's last tick, if it's still pending, isn't sent.
+    m_hasPendingUpdate = false;
+    if (m_notificationTimer) {
+        CFRunLoopTimerInvalidate(m_notificationTimer.get());
+        m_notificationTimer = nullptr;
+    }
     RunLoop::currentSingleton().stop();
 }
 
-void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *)
+void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
 {
     ASSERT(protect(m_runLoop)->isCurrent());
     // The main thread may have cleared m_wantsRunning before the link thread paused the link.
     if (!m_wantsRunning)
         return;
 
+    notifyAfterVSync(displayLink.timestamp, displayLink.duration);
+}
+
+void DisplayLinkCoreAnimationBackend::notificationTimerCallback(CFRunLoopTimerRef, void* backend)
+{
+    // As for a tick of the link.
+    @autoreleasepool {
+        Ref { *static_cast<DisplayLinkCoreAnimationBackend*>(backend) }->notifyPendingUpdate();
+    }
+}
+
+void DisplayLinkCoreAnimationBackend::notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration)
+{
+    ASSERT(protect(m_runLoop)->isCurrent());
+    // The previous tick's, if its timer hasn't fired yet, so that DisplayLink is notified of each tick.
+    notifyPendingUpdate();
+    // That notification may have stopped the backend.
+    if (!m_wantsRunning)
+        return;
+    m_hasPendingUpdate = true;
+    auto delay = displayLinkNotificationDelay(timestamp, duration, CACurrentMediaTime());
+    if (!delay) {
+        notifyPendingUpdate();
+        return;
+    }
+    auto fireDate = CFAbsoluteTimeGetCurrent() + delay.seconds();
+    if (m_notificationTimer) {
+        CFRunLoopTimerSetNextFireDate(m_notificationTimer.get(), fireDate);
+        return;
+    }
+    // A timer that is only rescheduled, never released while scheduled: invalidateOnLinkThread() invalidates it on this
+    // thread, before this backend can be destroyed.
+    CFRunLoopTimerContext context { 0, this, nullptr, nullptr, nullptr };
+    m_notificationTimer = adoptCF(CFRunLoopTimerCreate(kCFAllocatorDefault, fireDate, std::numeric_limits<CFTimeInterval>::max(), 0, 0, notificationTimerCallback, &context));
+    CFRunLoopAddTimer(protect(CFRunLoopGetCurrent()).get(), m_notificationTimer.get(), kCFRunLoopCommonModes);
+}
+
+void DisplayLinkCoreAnimationBackend::notifyPendingUpdate()
+{
+    ASSERT(protect(m_runLoop)->isCurrent());
+    // As at a tick, the main thread may have cleared m_wantsRunning meanwhile.
+    if (!std::exchange(m_hasPendingUpdate, false) || !m_wantsRunning)
+        return;
     Locker locker { m_clientLock };
     if (auto* client = m_client)
         displayLinkFired(*client);
