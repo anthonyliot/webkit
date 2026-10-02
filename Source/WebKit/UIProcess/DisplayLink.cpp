@@ -70,12 +70,21 @@ void DisplayLink::addObserver(Client& client, DisplayLinkObserverID observerID, 
         m_clients.ensure(client, [] {
             return ClientInfo { };
         }).iterator->value.observers.append({ observerID, preferredFramesPerSecond });
+#if PLATFORM(MAC)
+        updatePlatformFrameRateDivisor();
+#endif
     }
 
     if (!platformIsRunning()) {
         LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink for display " << m_displayID << " starting DisplayLink with fps " << m_displayNominalFramesPerSecond);
 
+#if PLATFORM(MAC)
+        // A platform display link that counts its updates passes the update of each tick.
+        if (!m_platformSupportsFrameRateDivisor)
+            m_currentUpdate = { 0, m_displayNominalFramesPerSecond };
+#else
         m_currentUpdate = { 0, m_displayNominalFramesPerSecond };
+#endif
 
         platformStart();
     }
@@ -101,6 +110,9 @@ void DisplayLink::removeObserver(Client& client, DisplayLinkObserverID observerI
     LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " remove observer " << observerID);
 
     removeInfoForClientIfUnused(client);
+#if PLATFORM(MAC)
+    updatePlatformFrameRateDivisor();
+#endif
 
     // We do not stop the display link right away when |m_clients| becomes empty. Instead, we
     // let the display link fire up to |maxFireCountWithoutObservers| times without observers to avoid
@@ -113,6 +125,9 @@ void DisplayLink::removeClient(Client& client)
 
     Locker locker { m_clientsLock };
     m_clients.remove(client);
+#if PLATFORM(MAC)
+    updatePlatformFrameRateDivisor();
+#endif
 
     // We do not stop the display link right away when |m_clients| becomes empty. Instead, we
     // let the display link fire up to |maxFireCountWithoutObservers| times without observers to avoid
@@ -135,6 +150,7 @@ bool DisplayLink::removeInfoForClientIfUnused(Client& client)
 
 void DisplayLink::incrementFullSpeedRequestClientCount(Client& client)
 {
+    ASSERT(RunLoop::isMain());
     Locker locker { m_clientsLock };
 
     auto& clientInfo = m_clients.ensure(client, [] {
@@ -142,10 +158,14 @@ void DisplayLink::incrementFullSpeedRequestClientCount(Client& client)
     }).iterator->value;
 
     ++clientInfo.fullSpeedUpdatesClientCount;
+#if PLATFORM(MAC)
+    updatePlatformFrameRateDivisor();
+#endif
 }
 
 void DisplayLink::decrementFullSpeedRequestClientCount(Client& client)
 {
+    ASSERT(RunLoop::isMain());
     Locker locker { m_clientsLock };
 
     auto it = m_clients.find(client);
@@ -156,15 +176,14 @@ void DisplayLink::decrementFullSpeedRequestClientCount(Client& client)
     ASSERT(clientInfo.fullSpeedUpdatesClientCount);
     --clientInfo.fullSpeedUpdatesClientCount;
     removeInfoForClientIfUnused(client);
-}
-
-void DisplayLink::displayPropertiesChanged()
-{
-    // FIXME: Detect whether the refresh frequency changed.
+#if PLATFORM(MAC)
+    updatePlatformFrameRateDivisor();
+#endif
 }
 
 void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLinkObserverID observerID, FramesPerSecond preferredFramesPerSecond)
 {
+    ASSERT(RunLoop::isMain());
     LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " setPreferredFramesPerSecond - display " << m_displayID << " observer " << observerID << " fps " << preferredFramesPerSecond);
 
     Locker locker { m_clientsLock };
@@ -178,15 +197,22 @@ void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLin
         return observer.observerID == observerID;
     });
 
-    if (index != notFound)
-        clientInfo.observers[index].preferredFramesPerSecond = preferredFramesPerSecond;
+    if (index == notFound)
+        return;
+
+    clientInfo.observers[index].preferredFramesPerSecond = preferredFramesPerSecond;
+#if PLATFORM(MAC)
+    updatePlatformFrameRateDivisor();
+#endif
 }
 
-void DisplayLink::notifyObserversDisplayDidRefresh()
+void DisplayLink::notifyObserversDisplayDidRefresh(std::optional<DisplayUpdate> update)
 {
     ASSERT(!RunLoop::isMain());
 
     Locker locker { m_clientsLock };
+    if (update)
+        m_currentUpdate = *update;
 
     tracePoint(DisplayLinkUpdate);
 

@@ -69,6 +69,15 @@
 
 - (BOOL)isPointInScrollbar:(NSPoint)locationInView;
 
+// The page's UI-process display link, or nil: "backend" ("CoreAnimation" or "CoreVideo"), "nominalFramesPerSecond" (as
+// the display link knows it) and "displayID"; with CoreAnimation, also "isRunning" (whether it's to run), "tickCount" (the
+// platform display link's callbacks since the first call), "countedFramesPerSecond" and "appliedDivisor" (as of its last
+// tick since the first call), "requestedDivisor", "denialCount" (the requests Core Animation didn't grant since the
+// display link was created), "delayedNotificationCount" (the notifications sent part way into a vsync since the first
+// call) and "minimumDelayedNotificationPhase" (the earliest of them, in refresh intervals after the vsync; infinity before
+// the first). The first call starts the recording, so its counts are 0.
+- (NSDictionary<NSString *, id> *)_displayLinkStateForTesting;
+
 @end
 
 #endif // !TARGET_OS_IPHONE

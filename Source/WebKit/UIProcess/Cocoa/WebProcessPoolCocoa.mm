@@ -1434,7 +1434,13 @@ void WebProcessPool::screenPropertiesChanged()
 void WebProcessPool::displayPropertiesChanged(WebCore::PlatformDisplayID displayID, CGDisplayChangeSummaryFlags flags)
 {
     if (auto* displayLink = displayLinks().existingDisplayLinkForDisplay(displayID))
-        displayLink->displayPropertiesChanged();
+        displayLink->displayPropertiesChanged(displayID, flags);
+    // Display 0, used by windowless and offscreen views, follows the main display, which a reconfiguration of any
+    // display can change.
+    if (displayID) {
+        if (auto* displayLink = displayLinks().existingDisplayLinkForDisplay(0))
+            displayLink->displayPropertiesChanged(displayID, flags);
+    }
 
     screenPropertiesChanged();
 }

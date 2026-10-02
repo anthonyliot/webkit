@@ -28,13 +28,47 @@
 
 #if HAVE(DISPLAY_LINK)
 
+#include "DisplayLinkRateController.h"
 #include "Logging.h"
 #include <wtf/ProcessPrivilege.h>
+#include <wtf/RunLoop.h>
+#include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/TextStream.h>
 
 namespace WebKit {
 
 using namespace WebCore;
+
+// The DisplayLink backend driven by CVDisplayLink.
+// FIXME: It doesn't follow display reconfigurations: after a mode change, DisplayLink counts updates at the rate it read
+// when it was created, so a 60 fps page gets 30 fps after 240 to 120 Hz.
+class DisplayLinkCoreVideoBackend final : public DisplayLinkPlatformBackend {
+    WTF_MAKE_TZONE_ALLOCATED_INLINE(DisplayLinkCoreVideoBackend);
+public:
+    static Ref<DisplayLinkCoreVideoBackend> create(DisplayLink& displayLink, PlatformDisplayID displayID)
+    {
+        Ref backend = adoptRef(*new DisplayLinkCoreVideoBackend);
+        backend->initialize(displayLink, displayID);
+        return backend;
+    }
+
+    FramesPerSecond nominalFramesPerSecond() const final { return m_nominalFramesPerSecond; }
+    bool isRunning() const final;
+    void start() final;
+    void stop() final;
+    void invalidate() final;
+
+private:
+    DisplayLinkCoreVideoBackend() = default;
+
+    void initialize(DisplayLink&, PlatformDisplayID);
+
+    static CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data);
+    static FramesPerSecond nominalFramesPerSecondFromDisplayLink(CVDisplayLinkRef);
+
+    RefPtr<__CVDisplayLink> m_displayLink;
+    FramesPerSecond m_nominalFramesPerSecond { FullSpeedFramesPerSecond };
+};
 
 static RefPtr<__CVDisplayLink> createDisplayLinkWithDisplay(CGDirectDisplayID displayID)
 {
@@ -49,29 +83,29 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     return adoptRef(displayLink);
 }
 
-void DisplayLink::platformInitialize()
+void DisplayLinkCoreVideoBackend::initialize(DisplayLink& displayLink, PlatformDisplayID displayID)
 {
     // FIXME: We can get here with displayID == 0 (webkit.org/b/212120), in which case CVDisplayLinkCreateWithCGDisplay()
     // probably defaults to the main screen.
-    ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
-    m_displayLink = createDisplayLinkWithDisplay(m_displayID);
+    m_displayLink = createDisplayLinkWithDisplay(displayID);
     if (!m_displayLink)
         return;
 
+    // The callback's context is the DisplayLink: invalidate() stops the CVDisplayLink first, and, as DisplayLink always
+    // has, relies on CVDisplayLinkStop() not to return while a callback runs.
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
-    auto error = CVDisplayLinkSetOutputCallback(m_displayLink.get(), displayLinkCallback, this);
+    auto error = CVDisplayLinkSetOutputCallback(m_displayLink.get(), displayLinkCallback, &displayLink);
 ALLOW_DEPRECATED_DECLARATIONS_END
     if (error) {
-        RELEASE_LOG_FAULT(DisplayLink, "DisplayLink: Could not set the display link output callback for display %u: error %d", m_displayID, error);
+        RELEASE_LOG_FAULT(DisplayLink, "DisplayLink: Could not set the display link output callback for display %u: error %d", displayID, error);
         return;
     }
 
-    m_displayNominalFramesPerSecond = nominalFramesPerSecondFromDisplayLink(m_displayLink.get());
+    m_nominalFramesPerSecond = nominalFramesPerSecondFromDisplayLink(m_displayLink.get());
 }
 
-void DisplayLink::platformFinalize()
+void DisplayLinkCoreVideoBackend::invalidate()
 {
-    ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
     ASSERT(m_displayLink);
     if (!m_displayLink)
         return;
@@ -82,7 +116,7 @@ ALLOW_DEPRECATED_DECLARATIONS_BEGIN
 ALLOW_DEPRECATED_DECLARATIONS_END
 }
 
-FramesPerSecond DisplayLink::nominalFramesPerSecondFromDisplayLink(CVDisplayLinkRef displayLink)
+FramesPerSecond DisplayLinkCoreVideoBackend::nominalFramesPerSecondFromDisplayLink(CVDisplayLinkRef displayLink)
 {
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     CVTime refreshPeriod = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink);
@@ -94,14 +128,14 @@ ALLOW_DEPRECATED_DECLARATIONS_END
     return result ?: FullSpeedFramesPerSecond;
 }
 
-bool DisplayLink::platformIsRunning() const
+bool DisplayLinkCoreVideoBackend::isRunning() const
 {
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     return CVDisplayLinkIsRunning(m_displayLink.get());
 ALLOW_DEPRECATED_DECLARATIONS_END
 }
 
-void DisplayLink::platformStart()
+void DisplayLinkCoreVideoBackend::start()
 {
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     CVReturn error = CVDisplayLinkStart(m_displayLink.get());
@@ -110,17 +144,127 @@ ALLOW_DEPRECATED_DECLARATIONS_END
         RELEASE_LOG_FAULT(DisplayLink, "DisplayLink: Could not start the display link: %d", error);
 }
 
-void DisplayLink::platformStop()
+void DisplayLinkCoreVideoBackend::stop()
 {
 ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     CVDisplayLinkStop(m_displayLink.get());
 ALLOW_DEPRECATED_DECLARATIONS_END
 }
 
-CVReturn DisplayLink::displayLinkCallback(CVDisplayLinkRef displayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data)
+CVReturn DisplayLinkCoreVideoBackend::displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data)
 {
-    static_cast<DisplayLink*>(data)->notifyObserversDisplayDidRefresh();
+    displayLinkFired(*static_cast<DisplayLink*>(data));
     return kCVReturnSuccess;
+}
+
+void DisplayLinkPlatformBackend::displayLinkFired(DisplayLink& displayLink)
+{
+    displayLink.notifyObserversDisplayDidRefresh();
+}
+
+void DisplayLinkPlatformBackend::displayLinkFired(DisplayLink& displayLink, DisplayUpdate update)
+{
+    displayLink.notifyObserversDisplayDidRefresh(update);
+}
+
+Vector<FramesPerSecond, 4> DisplayLink::observerFramesPerSecond() const
+{
+    Vector<FramesPerSecond, 4> framesPerSecond;
+    for (auto& clientInfo : m_clients.values()) {
+        // As in notifyObserversDisplayDidRefresh(), a client without observers gets no updates.
+        if (clientInfo.observers.isEmpty())
+            continue;
+        // A client with observers that wants every update, which CVDisplayLink gives it: the WebProcess's, while it handles
+        // wheel events itself, as it does with TiledCoreAnimationDrawingArea.
+        if (clientInfo.fullSpeedUpdatesClientCount)
+            framesPerSecond.append(m_displayNominalFramesPerSecond);
+        for (auto& observer : clientInfo.observers)
+            framesPerSecond.append(observer.preferredFramesPerSecond);
+    }
+    return framesPerSecond;
+}
+
+void DisplayLink::displayPropertiesChanged(PlatformDisplayID displayID, CGDisplayChangeSummaryFlags flags)
+{
+    ASSERT(RunLoop::isMain());
+    // The display's properties, like its refresh rate, are only final at the end of the reconfiguration.
+    if (flags & kCGDisplayBeginConfigurationFlag)
+        return;
+
+    RefPtr platformBackend = m_platformBackend;
+    if (!platformBackend->displayConfigurationChanged(displayID, flags))
+        return;
+
+    auto nominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
+    Locker locker { m_clientsLock };
+    if (nominalFramesPerSecond == m_displayNominalFramesPerSecond)
+        return;
+
+    RELEASE_LOG(DisplayLink, "[UI ] DisplayLink for display %u: nominal fps changed from %u to %u", m_displayID, m_displayNominalFramesPerSecond, nominalFramesPerSecond);
+    m_displayNominalFramesPerSecond = nominalFramesPerSecond;
+    // The same divisor is another rate now.
+    m_platformFrameRateDivisor = 0;
+    updatePlatformFrameRateDivisor();
+}
+
+void DisplayLink::updatePlatformFrameRateDivisor()
+{
+    if (!m_platformSupportsFrameRateDivisor)
+        return;
+
+    auto demands = observerFramesPerSecond();
+    // Without observers, keep the current rate: the display link stops after a few ticks without observers.
+    if (demands.isEmpty())
+        return;
+
+    auto divisor = displayLinkFrameRateDivisor(m_displayNominalFramesPerSecond, demands.span());
+    if (divisor == m_platformFrameRateDivisor)
+        return;
+
+    m_platformFrameRateDivisor = divisor;
+    LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " asks for divisor " << divisor << " of " << m_displayNominalFramesPerSecond << " fps for demands " << demands);
+    protect(m_platformBackend)->setFrameRateDivisor(divisor);
+}
+
+std::optional<DisplayLinkPlatformBackend::StateForTesting> DisplayLink::platformStateForTesting()
+{
+    ASSERT(RunLoop::isMain());
+    Ref platformBackend = *m_platformBackend;
+    platformBackend->startRecordingStateForTesting();
+    return platformBackend->stateForTesting();
+}
+
+void DisplayLink::platformInitialize()
+{
+    ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
+    RefPtr platformBackend = createCoreAnimationDisplayLinkBackendIfEnabled(*this, m_displayID);
+    if (!platformBackend)
+        platformBackend = DisplayLinkCoreVideoBackend::create(*this, m_displayID);
+    m_displayNominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
+    m_platformSupportsFrameRateDivisor = platformBackend->supportsFrameRateDivisor();
+    m_platformBackend = WTF::move(platformBackend);
+}
+
+void DisplayLink::platformFinalize()
+{
+    ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
+    protect(m_platformBackend)->invalidate();
+    m_platformBackend = nullptr;
+}
+
+bool DisplayLink::platformIsRunning() const
+{
+    return protect(m_platformBackend)->isRunning();
+}
+
+void DisplayLink::platformStart()
+{
+    protect(m_platformBackend)->start();
+}
+
+void DisplayLink::platformStop()
+{
+    protect(m_platformBackend)->stop();
 }
 
 } // namespace WebKit

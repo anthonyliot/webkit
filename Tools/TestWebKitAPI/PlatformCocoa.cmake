@@ -439,6 +439,7 @@ list(APPEND TestWebKit_PRIVATE_INCLUDE_DIRECTORIES
     ${WEBKIT_DIR}/Shared
     ${WEBKIT_DIR}/Shared/Cocoa
     ${WEBKIT_DIR}/UIProcess
+    ${WEBKIT_DIR}/UIProcess/mac
     ${WebKit_DERIVED_SOURCES_DIR}
     ${WebKit_DERIVED_SOURCES_DIR}/IPC
     ${WEBKIT_DIR}/Platform/cocoa
