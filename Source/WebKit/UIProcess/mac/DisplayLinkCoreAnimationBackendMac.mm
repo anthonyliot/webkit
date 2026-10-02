@@ -28,6 +28,7 @@
 
 #if HAVE(DISPLAY_LINK) && PLATFORM(MAC)
 
+#import "DisplayLinkRateController.h"
 #import "Logging.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -94,7 +95,7 @@ public:
         ASSERT(!m_displayLink);
         // The notification timer's context is this backend: invalidateOnLinkThread() invalidated it.
         ASSERT(!m_notificationTimer);
-        ASSERT(!m_hasPendingUpdate);
+        ASSERT(!m_pendingUpdate);
     }
 
     FramesPerSecond nominalFramesPerSecond() const final { return m_nominalFramesPerSecond; }
@@ -102,6 +103,8 @@ public:
     void start() final;
     void stop() final;
     void invalidate() final;
+    bool supportsFrameRateDivisor() const final { return true; }
+    void setFrameRateDivisor(unsigned) final;
 
     // Called on the link thread for each tick of the CADisplayLink.
     void tick(CADisplayLink *);
@@ -119,7 +122,8 @@ private:
     void scheduleSynchronizePausedState();
     void synchronizePausedState();
     void invalidateOnLinkThread();
-    void notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration);
+    void applyFrameRateDivisor(unsigned);
+    void notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration, DisplayUpdate);
     // On the link thread, when it's time to notify DisplayLink of the tick that waits for it.
     static void notificationTimerCallback(CFRunLoopTimerRef, void* backend);
     void notifyPendingUpdate();
@@ -131,6 +135,8 @@ private:
     const FramesPerSecond m_nominalFramesPerSecond;
     // Written on both threads (by stop() on the link thread), read on both.
     std::atomic<bool> m_wantsRunning { false };
+    // The divisor of the nominal rate DisplayLink asks for.
+    std::atomic<unsigned> m_requestedDivisor { 1 };
 
     // The link thread, created on the first start(), so that a DisplayLink that is only created to read the display's
     // rate doesn't create one. Written once, on the main thread, before anything is dispatched to it; read on both.
@@ -141,10 +147,13 @@ private:
 
     // Only accessed on the link thread.
     RetainPtr<CADisplayLink> m_displayLink;
-    // DisplayLink is notified part way into each vsync, not at the vsync, where CADisplayLink calls back: whether a
-    // tick waits for it, and the timer that sends it, made on the first tick and rescheduled at each one. (A
+    DisplayLinkRateController m_rateController;
+    // The denied divisors this link logged.
+    DisplayLinkDeniedDivisors m_loggedDenials;
+    // DisplayLink is notified part way into each vsync, not at the vsync, where CADisplayLink calls back: the update of
+    // the tick waiting for it, and the timer that sends it, made on the first tick and rescheduled at each one. (A
     // RunLoop::Timer that fired would make a new CFRunLoopTimer each time.)
-    bool m_hasPendingUpdate { false };
+    std::optional<DisplayUpdate> m_pendingUpdate;
     RetainPtr<CFRunLoopTimerRef> m_notificationTimer;
 };
 
@@ -165,6 +174,18 @@ void DisplayLinkCoreAnimationBackend::stop()
     ASSERT(protect(m_runLoop)->isCurrent());
     m_wantsRunning = false;
     scheduleSynchronizePausedState();
+}
+
+void DisplayLinkCoreAnimationBackend::setFrameRateDivisor(unsigned divisor)
+{
+    ASSERT(RunLoop::isMain());
+    m_requestedDivisor = divisor;
+    if (RefPtr runLoop = m_runLoop) {
+        // The latest request, when several are in flight.
+        runLoop->dispatch([protectedThis = Ref { *this }] {
+            protectedThis->applyFrameRateDivisor(protectedThis->m_requestedDivisor);
+        });
+    }
 }
 
 void DisplayLinkCoreAnimationBackend::invalidate()
@@ -213,7 +234,24 @@ void DisplayLinkCoreAnimationBackend::addDisplayLinkToRunLoop(RetainPtr<CADispla
     m_displayLink = WTF::move(displayLink);
     [m_displayLink setPaused:YES];
     [m_displayLink addToRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
+    applyFrameRateDivisor(m_requestedDivisor);
     synchronizePausedState();
+}
+
+void DisplayLinkCoreAnimationBackend::applyFrameRateDivisor(unsigned requestedDivisor)
+{
+    ASSERT(protect(m_runLoop)->isCurrent());
+    if (!m_displayLink)
+        return;
+    auto framesPerSecond = m_rateController.preferredFramesPerSecond(requestedDivisor, m_nominalFramesPerSecond);
+    if (!framesPerSecond)
+        return;
+
+    // Core Animation fires the link every N vsyncs, N nearest to the display's actual rate over the preferred rate: the
+    // nominal rate DisplayLink divided, over the divisor, gets that divisor, also on a 119.98 Hz mode. It doesn't fire
+    // the link at every N: asked for every 7 vsyncs, it fires it every 6, and the link falls back.
+    auto range = *framesPerSecond ? CAFrameRateRangeMake(*framesPerSecond, *framesPerSecond, *framesPerSecond) : CAFrameRateRangeDefault;
+    [m_displayLink setPreferredFrameRateRange:range];
 }
 
 void DisplayLinkCoreAnimationBackend::scheduleSynchronizePausedState()
@@ -236,8 +274,14 @@ void DisplayLinkCoreAnimationBackend::synchronizePausedState()
     if (!m_displayLink)
         return;
     bool shouldPause = !m_wantsRunning;
-    if ([m_displayLink isPaused] != shouldPause)
-        [m_displayLink setPaused:shouldPause];
+    if ([m_displayLink isPaused] == shouldPause)
+        return;
+    if (!shouldPause) {
+        // Core Animation may grant a divisor it didn't before, like after a slow grant under load: ask for it again.
+        m_rateController.linkResumed();
+        applyFrameRateDivisor(m_requestedDivisor);
+    }
+    [m_displayLink setPaused:shouldPause];
 }
 
 void DisplayLinkCoreAnimationBackend::invalidateOnLinkThread()
@@ -248,7 +292,7 @@ void DisplayLinkCoreAnimationBackend::invalidateOnLinkThread()
         m_displayLink = nil;
     }
     // The notification of the link's last tick, if it's still pending, isn't sent.
-    m_hasPendingUpdate = false;
+    m_pendingUpdate = std::nullopt;
     if (m_notificationTimer) {
         CFRunLoopTimerInvalidate(m_notificationTimer.get());
         m_notificationTimer = nullptr;
@@ -263,7 +307,21 @@ void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
     if (!m_wantsRunning)
         return;
 
-    notifyAfterVSync(displayLink.timestamp, displayLink.duration);
+    auto timestamp = displayLink.timestamp;
+    auto duration = displayLink.duration;
+    auto result = m_rateController.tick(timestamp, displayLink.targetTimestamp, duration, m_nominalFramesPerSecond);
+
+    // The divisor isn't asked of this link again until it resumes.
+    if (result.requestDenied) {
+        // Once per divisor for this link, whatever the mode: the link is asked for it again each time it resumes.
+        if (!m_loggedDenials.isDenied(result.requestedDivisor)) {
+            m_loggedDenials.deny(result.requestedDivisor);
+            RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink for display %u fires every %u vsyncs instead of %u; running it at the display's rate", m_displayID, result.linkDivisor, result.requestedDivisor);
+        }
+        applyFrameRateDivisor(m_requestedDivisor);
+    }
+
+    notifyAfterVSync(timestamp, duration, result.update);
 }
 
 void DisplayLinkCoreAnimationBackend::notificationTimerCallback(CFRunLoopTimerRef, void* backend)
@@ -274,15 +332,15 @@ void DisplayLinkCoreAnimationBackend::notificationTimerCallback(CFRunLoopTimerRe
     }
 }
 
-void DisplayLinkCoreAnimationBackend::notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration)
+void DisplayLinkCoreAnimationBackend::notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration, DisplayUpdate update)
 {
     ASSERT(protect(m_runLoop)->isCurrent());
-    // The previous tick's, if its timer hasn't fired yet, so that DisplayLink is notified of each tick.
+    // The previous tick's, if its timer hasn't fired yet, so that updates keep their order.
     notifyPendingUpdate();
     // That notification may have stopped the backend.
     if (!m_wantsRunning)
         return;
-    m_hasPendingUpdate = true;
+    m_pendingUpdate = update;
     auto delay = displayLinkNotificationDelay(timestamp, duration, CACurrentMediaTime());
     if (!delay) {
         notifyPendingUpdate();
@@ -303,12 +361,13 @@ void DisplayLinkCoreAnimationBackend::notifyAfterVSync(CFTimeInterval timestamp,
 void DisplayLinkCoreAnimationBackend::notifyPendingUpdate()
 {
     ASSERT(protect(m_runLoop)->isCurrent());
+    auto update = std::exchange(m_pendingUpdate, std::nullopt);
     // As at a tick, the main thread may have cleared m_wantsRunning meanwhile.
-    if (!std::exchange(m_hasPendingUpdate, false) || !m_wantsRunning)
+    if (!update || !m_wantsRunning)
         return;
     Locker locker { m_clientLock };
     if (auto* client = m_client)
-        displayLinkFired(*client);
+        displayLinkFired(*client, *update);
 }
 
 RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink& client, PlatformDisplayID displayID)

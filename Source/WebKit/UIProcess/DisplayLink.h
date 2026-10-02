@@ -67,9 +67,17 @@ public:
     // Called on the main thread before the DisplayLink is destroyed; no callback reaches the DisplayLink afterwards.
     virtual void invalidate() = 0;
 
+    // Whether the platform display link can fire below the display's rate. DisplayLink then asks it for the divisor of
+    // the nominal rate its observers need, and the backend counts the updates at the rate the link fires at.
+    virtual bool supportsFrameRateDivisor() const { return false; }
+    // Called on the main thread: fire every `divisor` vsyncs, 1 meaning at the display's rate.
+    virtual void setFrameRateDivisor(unsigned) { }
+
 protected:
-    // Called by the backend on its display link thread, once per tick.
+    // Called by the backend on its display link thread, once per tick. A backend that supports a frame rate divisor
+    // passes the update it counted.
     static void displayLinkFired(DisplayLink&);
+    static void displayLinkFired(DisplayLink&, WebCore::DisplayUpdate);
 };
 
 // Returns null unless the WebKitDebugDisplayLinkBackend default is "CoreAnimation" and the display has a screen.
@@ -116,8 +124,13 @@ public:
 private:
 #if PLATFORM(MAC)
     friend class DisplayLinkPlatformBackend;
+    // The rate each observer asks for; a client that wants full-speed updates counts as one more at the nominal rate.
+    Vector<WebCore::FramesPerSecond, 4> observerFramesPerSecond() const WTF_REQUIRES_LOCK(m_clientsLock);
+    void updatePlatformFrameRateDivisor() WTF_REQUIRES_LOCK(m_clientsLock);
 #endif
-    void notifyObserversDisplayDidRefresh();
+    // `update` is passed by a platform display link that counts its updates itself, because it can fire below the
+    // nominal rate.
+    void notifyObserversDisplayDidRefresh(std::optional<WebCore::DisplayUpdate> = std::nullopt);
 
     void platformInitialize();
     void platformFinalize();
@@ -139,6 +152,9 @@ private:
 
 #if PLATFORM(MAC)
     RefPtr<DisplayLinkPlatformBackend> m_platformBackend;
+    bool m_platformSupportsFrameRateDivisor { false };
+    // The divisor last asked of the backend; 0 until the first request.
+    unsigned m_platformFrameRateDivisor WTF_GUARDED_BY_LOCK(m_clientsLock) { 0 };
 #endif
 #if PLATFORM(GTK) || PLATFORM(WPE)
     std::unique_ptr<DisplayVBlankMonitor> m_vblankMonitor;
@@ -152,6 +168,8 @@ private:
     HashMap<CheckedRef<Client>, ClientInfo> m_clients WTF_GUARDED_BY_LOCK(m_clientsLock);
     const WebCore::PlatformDisplayID m_displayID;
     WebCore::FramesPerSecond m_displayNominalFramesPerSecond { WebCore::FullSpeedFramesPerSecond };
+    // Written under m_clientsLock on the display link thread, and without it by addObserver() on the main thread while
+    // the display link isn't running, unless the platform display link counts its updates and passes each one.
     WebCore::DisplayUpdate m_currentUpdate;
     unsigned m_fireCountWithoutObservers { 0 };
 };

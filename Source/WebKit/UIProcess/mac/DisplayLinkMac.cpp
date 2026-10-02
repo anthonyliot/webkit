@@ -28,6 +28,7 @@
 
 #if HAVE(DISPLAY_LINK)
 
+#include "DisplayLinkRateController.h"
 #include "Logging.h"
 #include <wtf/ProcessPrivilege.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -158,6 +159,47 @@ void DisplayLinkPlatformBackend::displayLinkFired(DisplayLink& displayLink)
     displayLink.notifyObserversDisplayDidRefresh();
 }
 
+void DisplayLinkPlatformBackend::displayLinkFired(DisplayLink& displayLink, DisplayUpdate update)
+{
+    displayLink.notifyObserversDisplayDidRefresh(update);
+}
+
+Vector<FramesPerSecond, 4> DisplayLink::observerFramesPerSecond() const
+{
+    Vector<FramesPerSecond, 4> framesPerSecond;
+    for (auto& clientInfo : m_clients.values()) {
+        // As in notifyObserversDisplayDidRefresh(), a client without observers gets no updates.
+        if (clientInfo.observers.isEmpty())
+            continue;
+        // A client with observers that wants every update, which CVDisplayLink gives it: the WebProcess's, while it handles
+        // wheel events itself, as it does with TiledCoreAnimationDrawingArea.
+        if (clientInfo.fullSpeedUpdatesClientCount)
+            framesPerSecond.append(m_displayNominalFramesPerSecond);
+        for (auto& observer : clientInfo.observers)
+            framesPerSecond.append(observer.preferredFramesPerSecond);
+    }
+    return framesPerSecond;
+}
+
+void DisplayLink::updatePlatformFrameRateDivisor()
+{
+    if (!m_platformSupportsFrameRateDivisor)
+        return;
+
+    auto demands = observerFramesPerSecond();
+    // Without observers, keep the current rate: the display link stops after a few ticks without observers.
+    if (demands.isEmpty())
+        return;
+
+    auto divisor = displayLinkFrameRateDivisor(m_displayNominalFramesPerSecond, demands.span());
+    if (divisor == m_platformFrameRateDivisor)
+        return;
+
+    m_platformFrameRateDivisor = divisor;
+    LOG_WITH_STREAM(DisplayLink, stream << "[UI ] DisplayLink " << this << " for display " << m_displayID << " asks for divisor " << divisor << " of " << m_displayNominalFramesPerSecond << " fps for demands " << demands);
+    protect(m_platformBackend)->setFrameRateDivisor(divisor);
+}
+
 void DisplayLink::platformInitialize()
 {
     ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
@@ -165,6 +207,7 @@ void DisplayLink::platformInitialize()
     if (!platformBackend)
         platformBackend = DisplayLinkCoreVideoBackend::create(*this, m_displayID);
     m_displayNominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
+    m_platformSupportsFrameRateDivisor = platformBackend->supportsFrameRateDivisor();
     m_platformBackend = WTF::move(platformBackend);
 }
 
