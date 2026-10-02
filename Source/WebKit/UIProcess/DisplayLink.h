@@ -38,6 +38,7 @@
 
 #if PLATFORM(MAC)
 #include <WebCore/CoreVideoExtras.h>
+#include <wtf/ThreadSafeRefCounted.h>
 #endif
 
 #if PLATFORM(GTK) || PLATFORM(WPE)
@@ -49,6 +50,28 @@ struct wpe_playstation_display;
 #endif
 
 namespace WebKit {
+
+#if PLATFORM(MAC)
+class DisplayLink;
+
+// The platform display link that drives a DisplayLink. Ref-counted so that a backend with its own thread can keep
+// itself alive across the work it dispatches there.
+class DisplayLinkPlatformBackend : public ThreadSafeRefCounted<DisplayLinkPlatformBackend> {
+public:
+    virtual ~DisplayLinkPlatformBackend() = default;
+
+    virtual WebCore::FramesPerSecond nominalFramesPerSecond() const = 0;
+    virtual bool isRunning() const = 0;
+    virtual void start() = 0;
+    virtual void stop() = 0;
+    // Called on the main thread before the DisplayLink is destroyed; no callback reaches the DisplayLink afterwards.
+    virtual void invalidate() = 0;
+
+protected:
+    // Called by the backend on its display link thread, once per tick.
+    static void displayLinkFired(DisplayLink&);
+};
+#endif
 
 class DisplayLink {
     WTF_MAKE_TZONE_ALLOCATED(DisplayLink);
@@ -89,8 +112,7 @@ public:
 
 private:
 #if PLATFORM(MAC)
-    static CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* data);
-    static WebCore::FramesPerSecond nominalFramesPerSecondFromDisplayLink(CVDisplayLinkRef);
+    friend class DisplayLinkPlatformBackend;
 #endif
     void notifyObserversDisplayDidRefresh();
 
@@ -113,7 +135,7 @@ private:
     };
 
 #if PLATFORM(MAC)
-    RefPtr<__CVDisplayLink> m_displayLink;
+    RefPtr<DisplayLinkPlatformBackend> m_platformBackend;
 #endif
 #if PLATFORM(GTK) || PLATFORM(WPE)
     std::unique_ptr<DisplayVBlankMonitor> m_vblankMonitor;
