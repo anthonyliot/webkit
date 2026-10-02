@@ -31,6 +31,7 @@
 #include "DisplayLinkRateController.h"
 #include "Logging.h"
 #include <wtf/ProcessPrivilege.h>
+#include <wtf/RunLoop.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/TextStream.h>
 
@@ -39,6 +40,8 @@ namespace WebKit {
 using namespace WebCore;
 
 // The DisplayLink backend driven by CVDisplayLink.
+// FIXME: It doesn't follow display reconfigurations: after a mode change, DisplayLink counts updates at the rate it read
+// when it was created, so a 60 fps page gets 30 fps after 240 to 120 Hz.
 class DisplayLinkCoreVideoBackend final : public DisplayLinkPlatformBackend {
     WTF_MAKE_TZONE_ALLOCATED_INLINE(DisplayLinkCoreVideoBackend);
 public:
@@ -179,6 +182,29 @@ Vector<FramesPerSecond, 4> DisplayLink::observerFramesPerSecond() const
             framesPerSecond.append(observer.preferredFramesPerSecond);
     }
     return framesPerSecond;
+}
+
+void DisplayLink::displayPropertiesChanged(PlatformDisplayID displayID, CGDisplayChangeSummaryFlags flags)
+{
+    ASSERT(RunLoop::isMain());
+    // The display's properties, like its refresh rate, are only final at the end of the reconfiguration.
+    if (flags & kCGDisplayBeginConfigurationFlag)
+        return;
+
+    RefPtr platformBackend = m_platformBackend;
+    if (!platformBackend->displayConfigurationChanged(displayID, flags))
+        return;
+
+    auto nominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
+    Locker locker { m_clientsLock };
+    if (nominalFramesPerSecond == m_displayNominalFramesPerSecond)
+        return;
+
+    RELEASE_LOG(DisplayLink, "[UI ] DisplayLink for display %u: nominal fps changed from %u to %u", m_displayID, m_displayNominalFramesPerSecond, nominalFramesPerSecond);
+    m_displayNominalFramesPerSecond = nominalFramesPerSecond;
+    // The same divisor is another rate now.
+    m_platformFrameRateDivisor = 0;
+    updatePlatformFrameRateDivisor();
 }
 
 void DisplayLink::updatePlatformFrameRateDivisor()

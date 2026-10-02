@@ -93,7 +93,7 @@ public:
     ~DisplayLinkCoreAnimationBackend()
     {
         ASSERT(!m_displayLink);
-        // The notification timer's context is this backend: invalidateOnLinkThread() invalidated it.
+        // The notification timer's context is this backend: invalidateDisplayLink() invalidated it.
         ASSERT(!m_notificationTimer);
         ASSERT(!m_pendingUpdate);
     }
@@ -105,6 +105,7 @@ public:
     void invalidate() final;
     bool supportsFrameRateDivisor() const final { return true; }
     void setFrameRateDivisor(unsigned) final;
+    bool displayConfigurationChanged(PlatformDisplayID, CGDisplayChangeSummaryFlags) final;
 
     // Called on the link thread for each tick of the CADisplayLink.
     void tick(CADisplayLink *);
@@ -118,9 +119,10 @@ private:
     }
 
     bool createDisplayLink();
-    void addDisplayLinkToRunLoop(RetainPtr<CADisplayLink>&&);
+    void replaceDisplayLink(RetainPtr<CADisplayLink>&&);
     void scheduleSynchronizePausedState();
     void synchronizePausedState();
+    void invalidateDisplayLink();
     void invalidateOnLinkThread();
     void applyFrameRateDivisor(unsigned);
     void notifyAfterVSync(CFTimeInterval timestamp, CFTimeInterval duration, DisplayUpdate);
@@ -132,7 +134,8 @@ private:
     // Cleared by invalidate(); no call into the DisplayLink can happen afterwards.
     DisplayLink* m_client WTF_GUARDED_BY_LOCK(m_clientLock);
     const PlatformDisplayID m_displayID;
-    const FramesPerSecond m_nominalFramesPerSecond;
+    // Written on the main thread, read on both.
+    std::atomic<FramesPerSecond> m_nominalFramesPerSecond;
     // Written on both threads (by stop() on the link thread), read on both.
     std::atomic<bool> m_wantsRunning { false };
     // The divisor of the nominal rate DisplayLink asks for.
@@ -143,6 +146,12 @@ private:
     RefPtr<RunLoop> m_runLoop;
 
     // Only accessed on the main thread.
+    bool m_hasDisplayLink { false };
+    // Whether to start again when the screen is back: the backend was running when its display went away, or was
+    // started while it had no screen.
+    bool m_restartWhenScreenReturns { false };
+    // The display of the screen the link was made for: the main display when it was made, for display 0.
+    PlatformDisplayID m_linkDisplayID { 0 };
     bool m_loggedMissingScreen { false };
 
     // Only accessed on the link thread.
@@ -161,8 +170,9 @@ void DisplayLinkCoreAnimationBackend::start()
 {
     ASSERT(RunLoop::isMain());
     m_wantsRunning = true;
-    if (!m_runLoop && !createDisplayLink()) {
+    if (!m_hasDisplayLink && !createDisplayLink()) {
         m_wantsRunning = false;
+        m_restartWhenScreenReturns = true;
         return;
     }
     scheduleSynchronizePausedState();
@@ -219,21 +229,82 @@ bool DisplayLinkCoreAnimationBackend::createDisplayLink()
     // The link retains its target, which keeps this backend alive until the link is invalidated on the link thread.
     RetainPtr target = adoptNS([[WKDisplayLinkBackendTarget alloc] initWithBackend:*this]);
     RetainPtr<CADisplayLink> displayLink = [screen displayLinkWithTarget:target.get() selector:@selector(displayLinkFired:)];
+    m_hasDisplayLink = true;
+    m_linkDisplayID = WebCore::displayID(screen);
     if (!m_runLoop)
         m_runLoop = RunLoop::create("WebKit: CADisplayLink"_s, ThreadType::Graphics, ThreadQOS::UserInteractive);
 
     protect(m_runLoop)->dispatch([protectedThis = Ref { *this }, displayLink = WTF::move(displayLink)] mutable {
-        protectedThis->addDisplayLinkToRunLoop(WTF::move(displayLink));
+        protectedThis->replaceDisplayLink(WTF::move(displayLink));
     });
     return true;
 }
 
-void DisplayLinkCoreAnimationBackend::addDisplayLinkToRunLoop(RetainPtr<CADisplayLink>&& displayLink)
+bool DisplayLinkCoreAnimationBackend::displayConfigurationChanged(PlatformDisplayID reconfiguredDisplayID, CGDisplayChangeSummaryFlags flags)
+{
+    ASSERT(RunLoop::isMain());
+    NSScreen *screen = screenForDisplay(m_displayID);
+    std::optional<PlatformDisplayID> screenDisplayID;
+    bool nominalFramesPerSecondChanged = false;
+    if (screen) {
+        screenDisplayID = WebCore::displayID(screen);
+        auto nominalFramesPerSecond = nominalFramesPerSecondForScreen(screen);
+        nominalFramesPerSecondChanged = m_nominalFramesPerSecond.exchange(nominalFramesPerSecond) != nominalFramesPerSecond;
+        // The requested divisor is of the old rate: a new link fires at the display's rate until DisplayLink asks again.
+        if (nominalFramesPerSecondChanged)
+            m_requestedDivisor = 1;
+    }
+
+    auto reconfiguration = displayLinkReconfiguration({
+        .hasLink = m_hasDisplayLink,
+        .restartWhenScreenReturns = m_restartWhenScreenReturns,
+        .screenDisplayID = screenDisplayID,
+        .linkDisplayID = m_linkDisplayID,
+        .reconfiguredDisplayID = reconfiguredDisplayID,
+        .displayWasAdded = !!(flags & kCGDisplayAddFlag),
+        .nominalRateChanged = nominalFramesPerSecondChanged,
+    });
+    switch (reconfiguration) {
+    case DisplayLinkReconfiguration::None:
+        break;
+    case DisplayLinkReconfiguration::RemoveLink:
+        // Meanwhile, the pages on the display move to another display's DisplayLink, or keep their observers here.
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink for display %u: the display was removed", m_displayID);
+        m_hasDisplayLink = false;
+        m_restartWhenScreenReturns = m_wantsRunning;
+        m_wantsRunning = false;
+        protect(m_runLoop)->dispatch([protectedThis = Ref { *this }] {
+            protectedThis->invalidateDisplayLink();
+        });
+        break;
+    case DisplayLinkReconfiguration::Restart:
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink for display %u: the display is back; starting again", m_displayID);
+        m_restartWhenScreenReturns = false;
+        start();
+        break;
+    case DisplayLinkReconfiguration::ReplaceLink:
+        RELEASE_LOG(DisplayLink, "[UI ] CADisplayLink for display %u: new link for display %u", m_displayID, *screenDisplayID);
+        createDisplayLink();
+        break;
+    case DisplayLinkReconfiguration::NominalRateChanged:
+        protect(m_runLoop)->dispatch([protectedThis = Ref { *this }] {
+            protectedThis->m_rateController.nominalRateChanged();
+        });
+        break;
+    }
+    return nominalFramesPerSecondChanged;
+}
+
+void DisplayLinkCoreAnimationBackend::replaceDisplayLink(RetainPtr<CADisplayLink>&& displayLink)
 {
     ASSERT(protect(m_runLoop)->isCurrent());
+    invalidateDisplayLink();
     m_displayLink = WTF::move(displayLink);
     [m_displayLink setPaused:YES];
     [m_displayLink addToRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
+    // A new link fires at the display's rate until it's asked for another one.
+    m_rateController = { };
+    m_loggedDenials.clear();
     applyFrameRateDivisor(m_requestedDivisor);
     synchronizePausedState();
 }
@@ -284,19 +355,25 @@ void DisplayLinkCoreAnimationBackend::synchronizePausedState()
     [m_displayLink setPaused:shouldPause];
 }
 
-void DisplayLinkCoreAnimationBackend::invalidateOnLinkThread()
+void DisplayLinkCoreAnimationBackend::invalidateDisplayLink()
 {
     ASSERT(protect(m_runLoop)->isCurrent());
     if (m_displayLink) {
         [m_displayLink invalidate];
         m_displayLink = nil;
     }
-    // The notification of the link's last tick, if it's still pending, isn't sent.
+    // The notification of the old link's last tick, if it's still pending, isn't sent.
     m_pendingUpdate = std::nullopt;
     if (m_notificationTimer) {
         CFRunLoopTimerInvalidate(m_notificationTimer.get());
         m_notificationTimer = nullptr;
     }
+}
+
+void DisplayLinkCoreAnimationBackend::invalidateOnLinkThread()
+{
+    ASSERT(protect(m_runLoop)->isCurrent());
+    invalidateDisplayLink();
     RunLoop::currentSingleton().stop();
 }
 
@@ -311,7 +388,7 @@ void DisplayLinkCoreAnimationBackend::tick(CADisplayLink *displayLink)
     auto duration = displayLink.duration;
     auto result = m_rateController.tick(timestamp, displayLink.targetTimestamp, duration, m_nominalFramesPerSecond);
 
-    // The divisor isn't asked of this link again until it resumes.
+    // The divisor isn't asked of this link again until it resumes, or until the display's rate changes.
     if (result.requestDenied) {
         // Once per divisor for this link, whatever the mode: the link is asked for it again each time it resumes.
         if (!m_loggedDenials.isDenied(result.requestedDivisor)) {
@@ -351,7 +428,7 @@ void DisplayLinkCoreAnimationBackend::notifyAfterVSync(CFTimeInterval timestamp,
         CFRunLoopTimerSetNextFireDate(m_notificationTimer.get(), fireDate);
         return;
     }
-    // A timer that is only rescheduled, never released while scheduled: invalidateOnLinkThread() invalidates it on this
+    // A timer that is only rescheduled, never released while scheduled: invalidateDisplayLink() invalidates it on this
     // thread, before this backend can be destroyed.
     CFRunLoopTimerContext context { 0, this, nullptr, nullptr, nullptr };
     m_notificationTimer = adoptCF(CFRunLoopTimerCreate(kCFAllocatorDefault, fireDate, std::numeric_limits<CFTimeInterval>::max(), 0, 0, notificationTimerCallback, &context));

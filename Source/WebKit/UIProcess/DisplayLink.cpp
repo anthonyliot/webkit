@@ -181,11 +181,6 @@ void DisplayLink::decrementFullSpeedRequestClientCount(Client& client)
 #endif
 }
 
-void DisplayLink::displayPropertiesChanged()
-{
-    // FIXME: Detect whether the refresh frequency changed.
-}
-
 void DisplayLink::setObserverPreferredFramesPerSecond(Client& client, DisplayLinkObserverID observerID, FramesPerSecond preferredFramesPerSecond)
 {
     ASSERT(RunLoop::isMain());

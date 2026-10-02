@@ -27,6 +27,7 @@
 
 #if PLATFORM(MAC)
 
+#include <CoreGraphics/CGDirectDisplay.h>
 #include <WebCore/AnimationFrameRate.h>
 #include <WebCore/DisplayUpdate.h>
 #include <algorithm>
@@ -127,6 +128,8 @@ public:
         m_counter.reset();
         m_deniedDivisors.clear();
     }
+    // The nominal rate changed: the divisors the link didn't get at the old rate are asked for again.
+    void nominalRateChanged() { m_deniedDivisors.clear(); }
 
     unsigned appliedDivisor() const { return m_appliedDivisor; }
 
@@ -138,6 +141,32 @@ private:
     WebCore::FramesPerSecond m_appliedNominalFramesPerSecond { 0 };
     double m_previousTimestamp { 0 };
 };
+
+// What the CADisplayLink backend of a display does at the end of a reconfiguration of `reconfiguredDisplayID`, given
+// its display's screen, if it has one, and the display its link was made for.
+enum class DisplayLinkReconfiguration : uint8_t {
+    None,
+    // The screen is gone: invalidate the link, and stop.
+    RemoveLink,
+    // The screen is back, and the backend was running or was started meanwhile: start again, with a new link.
+    Restart,
+    // The link was made for another screen (display 0 follows the main display), or its display was connected again:
+    // make a new link for the screen.
+    ReplaceLink,
+    // The display's rate changed: DisplayLink asks for a divisor of the new rate.
+    NominalRateChanged,
+};
+struct DisplayLinkReconfigurationState {
+    bool hasLink { false };
+    // The backend was running when its display went away, or was started while it had no screen.
+    bool restartWhenScreenReturns { false };
+    std::optional<CGDirectDisplayID> screenDisplayID;
+    CGDirectDisplayID linkDisplayID { 0 };
+    CGDirectDisplayID reconfiguredDisplayID { 0 };
+    bool displayWasAdded { false };
+    bool nominalRateChanged { false };
+};
+DisplayLinkReconfiguration displayLinkReconfiguration(const DisplayLinkReconfigurationState&);
 
 inline unsigned displayLinkFrameRateDivisor(WebCore::FramesPerSecond nominalFramesPerSecond, std::span<const WebCore::FramesPerSecond> demands)
 {
@@ -251,6 +280,17 @@ inline auto DisplayLinkRateController::tick(double timestamp, double targetTimes
         result.requestDenied = true;
     }
     return result;
+}
+
+inline DisplayLinkReconfiguration displayLinkReconfiguration(const DisplayLinkReconfigurationState& state)
+{
+    if (!state.screenDisplayID)
+        return state.hasLink ? DisplayLinkReconfiguration::RemoveLink : DisplayLinkReconfiguration::None;
+    if (!state.hasLink)
+        return state.restartWhenScreenReturns ? DisplayLinkReconfiguration::Restart : DisplayLinkReconfiguration::None;
+    if (*state.screenDisplayID != state.linkDisplayID || (state.reconfiguredDisplayID == *state.screenDisplayID && state.displayWasAdded))
+        return DisplayLinkReconfiguration::ReplaceLink;
+    return state.nominalRateChanged ? DisplayLinkReconfiguration::NominalRateChanged : DisplayLinkReconfiguration::None;
 }
 
 } // namespace WebKit

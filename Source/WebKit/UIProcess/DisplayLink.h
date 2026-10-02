@@ -37,6 +37,7 @@
 #include <wtf/TZoneMalloc.h>
 
 #if PLATFORM(MAC)
+#include <CoreGraphics/CGDisplayConfiguration.h>
 #include <WebCore/CoreVideoExtras.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #endif
@@ -66,6 +67,9 @@ public:
     virtual void stop() = 0;
     // Called on the main thread before the DisplayLink is destroyed; no callback reaches the DisplayLink afterwards.
     virtual void invalidate() = 0;
+    // Called on the main thread at the end of a reconfiguration of `displayID` (not necessarily the backend's display).
+    // Returns whether the nominal rate may have changed.
+    virtual bool displayConfigurationChanged(WebCore::PlatformDisplayID, CGDisplayChangeSummaryFlags) { return false; }
 
     // Whether the platform display link can fire below the display's rate. DisplayLink then asks it for the divisor of
     // the nominal rate its observers need, and the backend counts the updates at the rate the link fires at.
@@ -104,7 +108,11 @@ public:
     WebCore::PlatformDisplayID displayID() const { return m_displayID; }
     WebCore::FramesPerSecond nominalFramesPerSecond() const { return m_displayNominalFramesPerSecond; }
 
-    void NODELETE displayPropertiesChanged();
+#if PLATFORM(MAC)
+    // Called on the main thread for each reconfiguration callback of `displayID`: this DisplayLink's display, or any
+    // display for display 0's DisplayLink, which follows the main display.
+    void displayPropertiesChanged(WebCore::PlatformDisplayID, CGDisplayChangeSummaryFlags);
+#endif
 
     void addObserver(Client&, DisplayLinkObserverID, WebCore::FramesPerSecond);
     void removeObserver(Client&, DisplayLinkObserverID);
@@ -167,6 +175,7 @@ private:
     Lock m_clientsLock;
     HashMap<CheckedRef<Client>, ClientInfo> m_clients WTF_GUARDED_BY_LOCK(m_clientsLock);
     const WebCore::PlatformDisplayID m_displayID;
+    // With a backend that follows display reconfigurations, written on the main thread under m_clientsLock.
     WebCore::FramesPerSecond m_displayNominalFramesPerSecond { WebCore::FullSpeedFramesPerSecond };
     // Written under m_clientsLock on the display link thread, and without it by addObserver() on the main thread while
     // the display link isn't running, unless the platform display link counts its updates and passes each one.

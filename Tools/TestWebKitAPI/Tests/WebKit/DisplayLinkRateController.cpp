@@ -31,6 +31,32 @@
 #include "Test.h"
 #include <wtf/Vector.h>
 
+namespace WebKit {
+
+// So that the tests name the reconfigurations they compare.
+static void PrintTo(DisplayLinkReconfiguration reconfiguration, std::ostream* stream)
+{
+    switch (reconfiguration) {
+    case DisplayLinkReconfiguration::None:
+        *stream << "None";
+        return;
+    case DisplayLinkReconfiguration::RemoveLink:
+        *stream << "RemoveLink";
+        return;
+    case DisplayLinkReconfiguration::Restart:
+        *stream << "Restart";
+        return;
+    case DisplayLinkReconfiguration::ReplaceLink:
+        *stream << "ReplaceLink";
+        return;
+    case DisplayLinkReconfiguration::NominalRateChanged:
+        *stream << "NominalRateChanged";
+        return;
+    }
+}
+
+} // namespace WebKit
+
 namespace TestWebKitAPI {
 
 using namespace WebCore;
@@ -571,6 +597,9 @@ TEST(DisplayLinkRate, RateControllerAcrossAModeChange)
         ASSERT_FALSE(ticks.tickFor(0.5, 4, 240, 240));
         ASSERT_EQ(ticks.tick(2, 120, 240).update.updatesPerSecond, 60u);
         ASSERT_FALSE(ticks.tickFor(1, 2, 120, 240));
+        ticks.controller.nominalRateChanged();
+        ASSERT_EQ(ticks.controller.preferredFramesPerSecond(2, 120), 60.0);
+        ASSERT_FALSE(ticks.tickFor(1, 2, 120, 120));
     }
     {
         RateControllerTicks ticks;
@@ -578,6 +607,9 @@ TEST(DisplayLinkRate, RateControllerAcrossAModeChange)
         ASSERT_FALSE(ticks.tickFor(0.5, 4, 144, 144));
         ASSERT_EQ(ticks.tick(6, 240, 144).update.updatesPerSecond, 40u);
         ASSERT_FALSE(ticks.tickFor(1, 6, 240, 144));
+        ASSERT_FALSE(ticks.tickFor(1, 6, 240, 240));
+        ticks.controller.nominalRateChanged();
+        ASSERT_EQ(ticks.controller.preferredFramesPerSecond(6, 240), 40.0);
         ASSERT_FALSE(ticks.tickFor(1, 6, 240, 240));
     }
 }
@@ -594,6 +626,21 @@ TEST(DisplayLinkRate, RateControllerFallsBackForLargeDivisors)
     ASSERT_TRUE(denied);
     ASSERT_EQ(ticks.controller.preferredFramesPerSecond(72, 144), 0.0);
     ASSERT_FALSE(ticks.tickFor(1, 1, 144, 144));
+}
+
+// When the nominal rate changes, the divisors the link didn't get are asked for again.
+TEST(DisplayLinkRate, RateControllerAsksAgainAfterANominalRateChange)
+{
+    RateControllerTicks ticks;
+    ASSERT_EQ(ticks.controller.preferredFramesPerSecond(4, 240), 60.0);
+    bool denied = false;
+    for (unsigned i = 0; i < 20 && !denied; ++i)
+        denied = ticks.tick(3, 240, 240).requestDenied;
+    ASSERT_TRUE(denied);
+    ASSERT_EQ(ticks.controller.preferredFramesPerSecond(4, 240), 0.0);
+    ticks.tickFor(0.2, 1, 240, 240);
+    ticks.controller.nominalRateChanged();
+    ASSERT_EQ(ticks.controller.preferredFramesPerSecond(4, 240), 60.0);
 }
 
 // While a request made for another mode of the display is re-mapped (120 to 60 Hz with divisor 2 applied), a stray
@@ -613,6 +660,31 @@ TEST(DisplayLinkRate, RateControllerIgnoresAStrayIntervalWhileARequestIsForAnoth
     ASSERT_EQ(stray.update.updatesPerSecond, 60u);
     ASSERT_EQ(stray.update.updateIndex, index + 1);
     ASSERT_EQ(ticks.tick(1, 60, 120).update.updateIndex, index + 2);
+}
+
+// What the CADisplayLink backend does at the end of a display reconfiguration, for a link made for display 5.
+TEST(DisplayLinkRate, Reconfiguration)
+{
+    auto reconfiguration = [](DisplayLinkReconfigurationState state) {
+        state.linkDisplayID = 5;
+        return displayLinkReconfiguration(state);
+    };
+    // The display is gone.
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .reconfiguredDisplayID = 5 }), DisplayLinkReconfiguration::RemoveLink);
+    EXPECT_EQ(reconfiguration({ .restartWhenScreenReturns = true, .reconfiguredDisplayID = 5 }), DisplayLinkReconfiguration::None);
+    // It's back: start again if the backend was running, or was started meanwhile.
+    EXPECT_EQ(reconfiguration({ .restartWhenScreenReturns = true, .screenDisplayID = 5, .reconfiguredDisplayID = 5, .displayWasAdded = true }), DisplayLinkReconfiguration::Restart);
+    EXPECT_EQ(reconfiguration({ .screenDisplayID = 5, .reconfiguredDisplayID = 5, .displayWasAdded = true }), DisplayLinkReconfiguration::None);
+    // Display 0's link was made for another main display, even if the rate changed too.
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 7, .reconfiguredDisplayID = 7 }), DisplayLinkReconfiguration::ReplaceLink);
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 7, .reconfiguredDisplayID = 7, .nominalRateChanged = true }), DisplayLinkReconfiguration::ReplaceLink);
+    // The link's display was connected again; another display was.
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 5, .reconfiguredDisplayID = 5, .displayWasAdded = true }), DisplayLinkReconfiguration::ReplaceLink);
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 5, .reconfiguredDisplayID = 7, .displayWasAdded = true }), DisplayLinkReconfiguration::None);
+    // A mode change.
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 5, .reconfiguredDisplayID = 5, .nominalRateChanged = true }), DisplayLinkReconfiguration::NominalRateChanged);
+    // Nothing that concerns the link.
+    EXPECT_EQ(reconfiguration({ .hasLink = true, .screenDisplayID = 5, .reconfiguredDisplayID = 7 }), DisplayLinkReconfiguration::None);
 }
 
 } // namespace TestWebKitAPI
