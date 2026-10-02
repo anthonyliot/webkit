@@ -161,7 +161,9 @@ void DisplayLinkPlatformBackend::displayLinkFired(DisplayLink& displayLink)
 void DisplayLink::platformInitialize()
 {
     ASSERT(hasProcessPrivilege(ProcessPrivilege::CanCommunicateWithWindowServer));
-    Ref platformBackend = DisplayLinkCoreVideoBackend::create(*this, m_displayID);
+    RefPtr platformBackend = createCoreAnimationDisplayLinkBackendIfEnabled(*this, m_displayID);
+    if (!platformBackend)
+        platformBackend = DisplayLinkCoreVideoBackend::create(*this, m_displayID);
     m_displayNominalFramesPerSecond = platformBackend->nominalFramesPerSecond();
     m_platformBackend = WTF::move(platformBackend);
 }

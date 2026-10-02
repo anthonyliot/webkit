@@ -71,6 +71,9 @@ protected:
     // Called by the backend on its display link thread, once per tick.
     static void displayLinkFired(DisplayLink&);
 };
+
+// Returns null unless the WebKitDebugDisplayLinkBackend default is "CoreAnimation" and the display has a screen.
+RefPtr<DisplayLinkPlatformBackend> createCoreAnimationDisplayLinkBackendIfEnabled(DisplayLink&, WebCore::PlatformDisplayID);
 #endif
 
 class DisplayLink {

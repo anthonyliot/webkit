@@ -638,6 +638,7 @@ UIProcess/Launcher/cocoa/ProcessLauncherCocoa.mm @nonARC
 
 UIProcess/mac/AppKitGestures/WKAppKitGestureController.mm @nonARC
 UIProcess/mac/CorrectionPanel.mm @nonARC
+UIProcess/mac/DisplayLinkCoreAnimationBackendMac.mm
 UIProcess/mac/DisplayLinkMac.cpp
 UIProcess/mac/PageClientImplMac.mm @nonARC
 UIProcess/mac/SecItemShimProxy.cpp
